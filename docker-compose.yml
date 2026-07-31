@@ -1,0 +1,14 @@
+services:
+  domlink:
+    build: .
+    image: domlink:latest
+    container_name: domlink
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=3000
+      - DATA_DIR=/app/data
+      # - COOKIE_SECURE=true   # aktivieren, wenn die App hinter HTTPS/TLS läuft

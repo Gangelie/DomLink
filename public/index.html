@@ -1,0 +1,714 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DomLink</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          bg: '#121212',
+          surface: '#1e1e1e',
+          surface2: '#262626',
+          accent: '#3b82f6',
+        },
+      },
+    },
+  };
+</script>
+<style>
+  body { background-color: #121212; color: #e5e7eb; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: #121212; }
+  ::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 6px; }
+
+  .tab-btn.active { color: #fff; border-bottom-color: #3b82f6; }
+  .tab-btn { border-bottom: 2px solid transparent; }
+
+  .toggle { position: relative; display: inline-block; width: 42px; height: 24px; flex-shrink: 0; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle .slider { position: absolute; cursor: pointer; inset: 0; background-color: #3a3a3a; border-radius: 999px; transition: .15s; }
+  .toggle .slider::before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: #fff; border-radius: 50%; transition: .15s; }
+  .toggle input:checked + .slider { background-color: #3b82f6; }
+  .toggle input:checked + .slider::before { transform: translateX(18px); }
+
+  .status-dot { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
+  .status-dot.green { background-color: #22c55e; box-shadow: 0 0 6px #22c55e; }
+  .status-dot.red { background-color: #ef4444; box-shadow: 0 0 6px #ef4444; }
+  .status-dot.gray { background-color: #6b7280; }
+
+  input[type=text], input[type=password], input[type=number], select {
+    background-color: #262626; border: 1px solid #3a3a3a; color: #e5e7eb;
+  }
+  input:focus, select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,.3); }
+
+  .toast { animation: fadein .15s ease-out; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body class="min-h-screen font-sans text-sm">
+
+<div id="toasts" class="fixed top-4 right-4 z-50 flex flex-col gap-2 w-80"></div>
+
+<!-- LOGIN SCREEN -->
+<div id="login-screen" class="hidden min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-sm bg-surface border border-white/10 rounded-xl p-8 shadow-xl">
+    <h1 class="text-xl font-semibold text-white mb-1">DomLink</h1>
+    <p class="text-gray-400 mb-6">Bitte melde dich an</p>
+    <form id="login-form" class="space-y-4">
+      <div>
+        <label class="block text-gray-400 mb-1">Passwort</label>
+        <input id="login-password" type="password" required class="w-full rounded-lg px-3 py-2" autofocus />
+      </div>
+      <p id="login-error" class="text-red-400 hidden"></p>
+      <button type="submit" class="w-full bg-accent hover:bg-blue-500 text-white rounded-lg py-2 font-medium transition">Anmelden</button>
+    </form>
+  </div>
+</div>
+
+<!-- FORCED PASSWORD CHANGE -->
+<div id="force-pw-screen" class="hidden min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-sm bg-surface border border-white/10 rounded-xl p-8 shadow-xl">
+    <h1 class="text-xl font-semibold text-white mb-1">Passwort ändern erforderlich</h1>
+    <p class="text-gray-400 mb-6">Du verwendest noch das Standardpasswort. Bitte lege jetzt ein neues Passwort fest.</p>
+    <form id="force-pw-form" class="space-y-4">
+      <input type="hidden" value="admin" id="force-pw-current" />
+      <div>
+        <label class="block text-gray-400 mb-1">Neues Passwort</label>
+        <input id="force-pw-new" type="password" required minlength="6" class="w-full rounded-lg px-3 py-2" />
+      </div>
+      <div>
+        <label class="block text-gray-400 mb-1">Passwort bestätigen</label>
+        <input id="force-pw-confirm" type="password" required minlength="6" class="w-full rounded-lg px-3 py-2" />
+      </div>
+      <p id="force-pw-error" class="text-red-400 hidden"></p>
+      <button type="submit" class="w-full bg-accent hover:bg-blue-500 text-white rounded-lg py-2 font-medium transition">Passwort setzen</button>
+    </form>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app" class="hidden min-h-screen flex flex-col">
+  <!-- Top bar -->
+  <header class="bg-surface border-b border-white/10 px-4 sm:px-6 py-3 flex items-center justify-between gap-4 flex-wrap">
+    <h1 class="text-lg font-semibold text-white whitespace-nowrap">🏠 DomLink</h1>
+    <div class="flex items-center gap-5 text-xs text-gray-300 flex-wrap">
+      <div class="flex items-center gap-2" title="Domoticz Verbindung">
+        <span id="dot-domoticz" class="status-dot gray"></span> Domoticz
+      </div>
+      <div class="flex items-center gap-2" title="VSH Alexa Bridge">
+        <span id="dot-vsh" class="status-dot gray"></span> Alexa Bridge
+      </div>
+      <button id="btn-logout" class="bg-surface2 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-1.5 transition">Abmelden</button>
+    </div>
+  </header>
+
+  <!-- Tabs -->
+  <nav class="bg-surface border-b border-white/10 px-4 sm:px-6 flex gap-6 overflow-x-auto text-gray-400">
+    <button data-tab="all" class="tab-btn active py-3 whitespace-nowrap">📂 Alle Geräte</button>
+    <button data-tab="lights" class="tab-btn py-3 whitespace-nowrap">💡 Lichter &amp; Dimmer</button>
+    <button data-tab="switches" class="tab-btn py-3 whitespace-nowrap">🔌 Schalter &amp; Steckdosen</button>
+    <button data-tab="blinds" class="tab-btn py-3 whitespace-nowrap">🪟 Rollläden / Jalousien</button>
+    <button data-tab="sensors" class="tab-btn py-3 whitespace-nowrap">🌡️ Sensoren &amp; Thermostate</button>
+    <button data-tab="meters" class="tab-btn py-3 whitespace-nowrap">🔢 Zähler</button>
+    <button data-tab="settings" class="tab-btn py-3 whitespace-nowrap">⚙️ Einstellungen</button>
+  </nav>
+
+  <main class="flex-1 p-4 sm:p-6 max-w-6xl w-full mx-auto">
+
+    <!-- Device tabs -->
+    <section id="view-devices">
+      <div class="flex items-center justify-between mb-4">
+        <p class="text-gray-400" id="device-count">0 Geräte</p>
+        <button id="btn-refresh-devices" class="bg-surface2 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-1.5 transition text-gray-200">↻ Aktualisieren</button>
+      </div>
+      <p id="meter-hint" class="hidden text-gray-400 bg-surface2 border border-white/10 rounded-lg px-4 py-3 mb-4">
+        Zähler haben in Alexa keine eigene Kategorie. Um einen Wert trotzdem per Sprachbefehl abfragen zu können, setze bei „Alexa Typ" <strong class="text-gray-200">Temperatursensor</strong> und wähle rechts den gewünschten Quellwert (z.&nbsp;B. Momentanverbrauch in Watt). Alexa nennt den Wert dann in „Grad" (z.&nbsp;B. „372 Grad" für 372 Watt) — das ist eine Einschränkung von Alexa selbst, nicht von DomLink.
+      </p>
+      <div class="bg-surface border border-white/10 rounded-xl overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left">
+            <thead class="bg-surface2 text-gray-400 text-xs uppercase tracking-wide">
+              <tr>
+                <th class="px-4 py-3 font-medium">Aktiv</th>
+                <th class="px-4 py-3 font-medium">Domoticz Name</th>
+                <th class="px-4 py-3 font-medium">IDX</th>
+                <th class="px-4 py-3 font-medium">Status</th>
+                <th class="px-4 py-3 font-medium">Alexa Display Name</th>
+                <th class="px-4 py-3 font-medium">Alexa Typ</th>
+                <th class="px-4 py-3 font-medium">Quellwert</th>
+              </tr>
+            </thead>
+            <tbody id="device-table-body" class="divide-y divide-white/5"></tbody>
+          </table>
+        </div>
+        <p id="device-empty" class="hidden text-center text-gray-500 py-10">Keine Geräte gefunden. Prüfe die Domoticz-Verbindung in den Einstellungen.</p>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" class="hidden space-y-6">
+
+      <div class="bg-surface border border-white/10 rounded-xl p-5">
+        <h2 class="text-white font-semibold mb-4">Domoticz Verbindung</h2>
+        <div class="grid sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-gray-400 mb-1">URL / IP</label>
+            <input id="dz-url" type="text" placeholder="http://192.168.1.100" class="w-full rounded-lg px-3 py-2" />
+          </div>
+          <div>
+            <label class="block text-gray-400 mb-1">Port</label>
+            <input id="dz-port" type="text" placeholder="8080" class="w-full rounded-lg px-3 py-2" />
+          </div>
+          <div>
+            <label class="block text-gray-400 mb-1">Benutzername (optional)</label>
+            <input id="dz-username" type="text" class="w-full rounded-lg px-3 py-2" />
+          </div>
+          <div>
+            <label class="block text-gray-400 mb-1">Passwort (optional)</label>
+            <input id="dz-password" type="password" class="w-full rounded-lg px-3 py-2" />
+          </div>
+        </div>
+        <div class="flex gap-3 mt-4">
+          <button id="btn-dz-test" class="bg-surface2 hover:bg-white/10 border border-white/10 rounded-lg px-4 py-2 transition">Verbindung zu Domoticz testen</button>
+          <button id="btn-dz-save" class="bg-accent hover:bg-blue-500 text-white rounded-lg px-4 py-2 transition">Speichern</button>
+        </div>
+        <p id="dz-test-result" class="mt-3 text-gray-400"></p>
+      </div>
+
+      <div class="bg-surface border border-white/10 rounded-xl p-5">
+        <h2 class="text-white font-semibold mb-1">Virtual Smart Home (Alexa)</h2>
+        <p class="text-gray-500 mb-4">Verbindet diese App direkt (ohne Node-RED) über die VSH-Cloud mit Alexa. Die Anmeldung erfolgt per Amazon-Gerätecode.</p>
+
+        <div id="vsh-status-box" class="rounded-lg border border-white/10 bg-surface2 p-4 mb-4 text-gray-300">
+          <div class="flex items-center gap-2 mb-1"><span id="vsh-status-dot" class="status-dot gray"></span> <span id="vsh-status-text">Nicht verbunden</span></div>
+          <div id="vsh-status-email" class="text-gray-500"></div>
+        </div>
+
+        <div id="vsh-link-box" class="hidden rounded-lg border border-dashed border-accent p-4 mb-4 text-center">
+          <p class="text-gray-400 mb-2">Öffne den folgenden Link und gib den Code ein:</p>
+          <a id="vsh-link-url" target="_blank" class="text-accent underline break-all"></a>
+          <p class="text-3xl font-mono tracking-widest text-white my-3" id="vsh-link-code">----</p>
+          <p id="vsh-link-status" class="text-gray-500">Warte auf Bestätigung…</p>
+        </div>
+
+        <div class="flex gap-3 flex-wrap">
+          <button id="btn-vsh-link" class="bg-accent hover:bg-blue-500 text-white rounded-lg px-4 py-2 transition">Mit Amazon verbinden</button>
+          <button id="btn-vsh-test" class="bg-surface2 hover:bg-white/10 border border-white/10 rounded-lg px-4 py-2 transition">VSH Token prüfen</button>
+          <button id="btn-vsh-unlink" class="hidden bg-red-900/40 hover:bg-red-900/60 border border-red-800 text-red-300 rounded-lg px-4 py-2 transition">Trennen</button>
+        </div>
+
+        <details class="mt-5">
+          <summary class="text-gray-500 cursor-pointer">Erweitert: Backend-URL / LWA Client-ID</summary>
+          <div class="grid sm:grid-cols-2 gap-4 mt-3">
+            <div>
+              <label class="block text-gray-400 mb-1">VSH Backend-URL</label>
+              <input id="vsh-backend-url" type="text" class="w-full rounded-lg px-3 py-2" />
+            </div>
+            <div>
+              <label class="block text-gray-400 mb-1">LWA Client-ID</label>
+              <input id="vsh-lwa-client-id" type="text" class="w-full rounded-lg px-3 py-2" />
+            </div>
+          </div>
+          <button id="btn-vsh-adv-save" class="mt-3 bg-surface2 hover:bg-white/10 border border-white/10 rounded-lg px-4 py-2 transition">Speichern</button>
+        </details>
+      </div>
+
+      <div class="bg-surface border border-white/10 rounded-xl p-5">
+        <h2 class="text-white font-semibold mb-4">Passwort ändern</h2>
+        <form id="pw-form" class="grid sm:grid-cols-3 gap-4">
+          <div>
+            <label class="block text-gray-400 mb-1">Aktuelles Passwort</label>
+            <input id="pw-current" type="password" required class="w-full rounded-lg px-3 py-2" />
+          </div>
+          <div>
+            <label class="block text-gray-400 mb-1">Neues Passwort</label>
+            <input id="pw-new" type="password" required minlength="6" class="w-full rounded-lg px-3 py-2" />
+          </div>
+          <div>
+            <label class="block text-gray-400 mb-1">Bestätigen</label>
+            <input id="pw-confirm" type="password" required minlength="6" class="w-full rounded-lg px-3 py-2" />
+          </div>
+          <div class="sm:col-span-3">
+            <button type="submit" class="bg-accent hover:bg-blue-500 text-white rounded-lg px-4 py-2 transition">Passwort ändern</button>
+          </div>
+        </form>
+      </div>
+
+    </section>
+  </main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const ALEXA_TYPE_LABELS = {
+    SWITCH: 'Schalter', LIGHT: 'Licht', DIMMER: 'Dimmer',
+    BLIND: 'Rollladen', TEMPERATURE_SENSOR: 'Temperatursensor', THERMOSTAT: 'Thermostat',
+    METER: 'Zähler',
+  };
+  const FIELD_LABELS = {
+    Temp: 'Temperatur', Usage: 'Momentanverbrauch (Watt)', Data: 'Zählerstand (gesamt)',
+    Counter: 'Zählerstand (gesamt)', CounterToday: 'Verbrauch heute', Humidity: 'Luftfeuchtigkeit',
+    SetPoint: 'Sollwert',
+  };
+  const TAB_FILTERS = {
+    all: () => true,
+    lights: (d) => d.alexaType === 'LIGHT' || d.alexaType === 'DIMMER',
+    switches: (d) => d.alexaType === 'SWITCH',
+    blinds: (d) => d.alexaType === 'BLIND',
+    sensors: (d) => d.alexaType === 'TEMPERATURE_SENSOR' || d.alexaType === 'THERMOSTAT',
+    meters: (d) => d.alexaType === 'METER',
+  };
+
+  let currentTab = 'all';
+  let devices = [];
+  let alexaTypes = Object.keys(ALEXA_TYPE_LABELS);
+  let vshPollTimer = null;
+
+  // ---------------- helpers ----------------
+
+  function toast(message, kind) {
+    const el = document.createElement('div');
+    const colors = { error: 'bg-red-900/80 border-red-700 text-red-200', success: 'bg-green-900/80 border-green-700 text-green-200', info: 'bg-surface2 border-white/10 text-gray-200' };
+    el.className = 'toast border rounded-lg px-4 py-3 shadow-lg ' + (colors[kind] || colors.info);
+    el.textContent = message;
+    document.getElementById('toasts').appendChild(el);
+    setTimeout(() => el.remove(), 4500);
+  }
+
+  async function api(path, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+    if (opts.body && typeof opts.body !== 'string') opts.body = JSON.stringify(opts.body);
+    const resp = await fetch(path, opts);
+    let data = null;
+    try { data = await resp.json(); } catch (e) { /* no body */ }
+    if (!resp.ok) {
+      const err = new Error((data && data.error) || `HTTP ${resp.status}`);
+      err.status = resp.status;
+      throw err;
+    }
+    return data;
+  }
+
+  function show(id) { document.getElementById(id).classList.remove('hidden'); }
+  function hide(id) { document.getElementById(id).classList.add('hidden'); }
+
+  // ---------------- auth / boot ----------------
+
+  async function boot() {
+    try {
+      const status = await api('/api/auth/status');
+      if (!status.authenticated) return showLogin();
+      if (status.mustChangePassword) return showForcePasswordChange();
+      showApp();
+    } catch (e) {
+      showLogin();
+    }
+  }
+
+  function showLogin() {
+    hide('force-pw-screen'); hide('app');
+    show('login-screen');
+    document.getElementById('login-password').focus();
+  }
+
+  function showForcePasswordChange() {
+    hide('login-screen'); hide('app');
+    show('force-pw-screen');
+  }
+
+  function showApp() {
+    hide('login-screen'); hide('force-pw-screen');
+    show('app');
+    initApp();
+  }
+
+  document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const password = document.getElementById('login-password').value;
+    const errEl = document.getElementById('login-error');
+    errEl.classList.add('hidden');
+    try {
+      const result = await api('/api/auth/login', { method: 'POST', body: { password } });
+      if (result.mustChangePassword) showForcePasswordChange();
+      else showApp();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove('hidden');
+    }
+  });
+
+  document.getElementById('force-pw-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const newPassword = document.getElementById('force-pw-new').value;
+    const confirmPassword = document.getElementById('force-pw-confirm').value;
+    const errEl = document.getElementById('force-pw-error');
+    errEl.classList.add('hidden');
+    try {
+      await api('/api/auth/change-password', { method: 'POST', body: { currentPassword: 'admin', newPassword, confirmPassword } });
+      toast('Passwort erfolgreich geändert', 'success');
+      showApp();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove('hidden');
+    }
+  });
+
+  document.getElementById('btn-logout').addEventListener('click', async () => {
+    await api('/api/auth/logout', { method: 'POST' });
+    location.reload();
+  });
+
+  // ---------------- app init ----------------
+
+  let appInitialized = false;
+  function initApp() {
+    if (appInitialized) { refreshStatus(); refreshDevices(); return; }
+    appInitialized = true;
+
+    document.querySelectorAll('.tab-btn').forEach((btn) => {
+      btn.addEventListener('click', () => selectTab(btn.dataset.tab));
+    });
+
+    document.getElementById('btn-refresh-devices').addEventListener('click', refreshDevices);
+
+    document.getElementById('btn-dz-test').addEventListener('click', testDomoticz);
+    document.getElementById('btn-dz-save').addEventListener('click', saveDomoticz);
+
+    document.getElementById('btn-vsh-link').addEventListener('click', startVshLink);
+    document.getElementById('btn-vsh-test').addEventListener('click', testVshToken);
+    document.getElementById('btn-vsh-unlink').addEventListener('click', unlinkVsh);
+    document.getElementById('btn-vsh-adv-save').addEventListener('click', saveVshAdvanced);
+
+    document.getElementById('pw-form').addEventListener('submit', changePassword);
+
+    loadSettings();
+    refreshDevices();
+    refreshStatus();
+    setInterval(refreshStatus, 5000);
+  }
+
+  function selectTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+    if (tab === 'settings') {
+      hide('view-devices'); show('view-settings');
+    } else {
+      show('view-devices'); hide('view-settings');
+      document.getElementById('meter-hint').classList.toggle('hidden', tab !== 'meters');
+      renderDevices();
+    }
+  }
+
+  // ---------------- status bar ----------------
+
+  async function refreshStatus() {
+    try {
+      const status = await api('/api/status');
+      setDot('dot-domoticz', status.domoticz.online ? 'green' : 'red');
+      setDot('dot-vsh', status.vsh.connected ? 'green' : (status.vsh.linked ? 'red' : 'gray'));
+      renderVshStatus(status.vsh);
+    } catch (e) { /* transient */ }
+  }
+
+  function setDot(id, color) {
+    const el = document.getElementById(id);
+    el.className = 'status-dot ' + color;
+  }
+
+  // ---------------- devices ----------------
+
+  async function refreshDevices() {
+    try {
+      const data = await api('/api/devices');
+      devices = data.devices;
+      alexaTypes = data.alexaTypes || alexaTypes;
+      renderDevices();
+    } catch (e) {
+      toast('Geräte konnten nicht geladen werden: ' + e.message, 'error');
+    }
+  }
+
+  function stateSummary(d) {
+    const s = d.state || {};
+    const parts = [];
+    if (s.powerState !== undefined) parts.push(s.powerState === 'ON' ? 'An' : 'Aus');
+    if (s.brightness !== undefined) parts.push(s.brightness + '%');
+    if (s.percentage !== undefined) parts.push(s.percentage + '%');
+    if (s.temperature !== undefined) parts.push(s.temperature + '°C');
+    if (s.targetTemperature !== undefined) parts.push('Soll: ' + s.targetTemperature + '°C');
+    if (s.value !== undefined) parts.push(String(s.value));
+    return parts.join(' · ') || '–';
+  }
+
+  function renderDevices() {
+    const tbody = document.getElementById('device-table-body');
+    const filtered = devices.filter(TAB_FILTERS[currentTab] || (() => true));
+    document.getElementById('device-count').textContent = filtered.length + ' Geräte';
+    document.getElementById('device-empty').classList.toggle('hidden', devices.length !== 0);
+
+    tbody.innerHTML = '';
+    for (const d of filtered) {
+      const tr = document.createElement('tr');
+      tr.className = 'hover:bg-white/5';
+
+      const isMeter = d.alexaType === 'METER';
+      const tdActive = document.createElement('td');
+      tdActive.className = 'px-4 py-3';
+      if (isMeter) {
+        tdActive.innerHTML = `<label class="toggle opacity-40 cursor-not-allowed" title="Zähler können nicht mit Alexa verbunden werden"><input type="checkbox" disabled><span class="slider"></span></label>`;
+      } else {
+        tdActive.innerHTML = `<label class="toggle"><input type="checkbox" ${d.active ? 'checked' : ''}><span class="slider"></span></label>`;
+        tdActive.querySelector('input').addEventListener('change', (e) => updateDevice(d.idx, { active: e.target.checked }));
+      }
+
+      const tdName = document.createElement('td');
+      tdName.className = 'px-4 py-3 text-gray-300';
+      tdName.textContent = d.domoticzName;
+
+      const tdIdx = document.createElement('td');
+      tdIdx.className = 'px-4 py-3 text-gray-500 font-mono';
+      tdIdx.textContent = d.idx;
+
+      const tdStatus = document.createElement('td');
+      tdStatus.className = 'px-4 py-3 text-gray-400';
+      tdStatus.textContent = stateSummary(d);
+
+      const tdAlexaName = document.createElement('td');
+      tdAlexaName.className = 'px-4 py-3';
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.value = d.alexaName || d.domoticzName;
+      nameInput.className = 'w-full rounded-lg px-2 py-1.5';
+      nameInput.addEventListener('change', () => updateDevice(d.idx, { alexaName: nameInput.value }));
+      tdAlexaName.appendChild(nameInput);
+
+      const tdType = document.createElement('td');
+      tdType.className = 'px-4 py-3';
+      const select = document.createElement('select');
+      select.className = 'rounded-lg px-2 py-1.5';
+      for (const t of alexaTypes) {
+        const opt = document.createElement('option');
+        opt.value = t;
+        opt.textContent = ALEXA_TYPE_LABELS[t] || t;
+        if (t === d.alexaType) opt.selected = true;
+        select.appendChild(opt);
+      }
+      select.addEventListener('change', () => updateDevice(d.idx, { alexaType: select.value }));
+      tdType.appendChild(select);
+
+      const tdField = document.createElement('td');
+      tdField.className = 'px-4 py-3';
+      if (d.alexaType === 'TEMPERATURE_SENSOR' && d.availableFields && d.availableFields.length > 1) {
+        const fieldSelect = document.createElement('select');
+        fieldSelect.className = 'rounded-lg px-2 py-1.5';
+        for (const f of d.availableFields) {
+          const opt = document.createElement('option');
+          opt.value = f.field;
+          opt.textContent = `${FIELD_LABELS[f.field] || f.field} (${f.display})`;
+          if (f.field === (d.valueField || d.state.sourceField)) opt.selected = true;
+          fieldSelect.appendChild(opt);
+        }
+        fieldSelect.addEventListener('change', () => updateDevice(d.idx, { valueField: fieldSelect.value }));
+        tdField.appendChild(fieldSelect);
+      } else {
+        tdField.className += ' text-gray-600';
+        tdField.textContent = '–';
+      }
+
+      tr.append(tdActive, tdName, tdIdx, tdStatus, tdAlexaName, tdType, tdField);
+      tbody.appendChild(tr);
+    }
+  }
+
+  async function updateDevice(idx, patch) {
+    try {
+      const result = await api('/api/devices/' + idx, { method: 'PUT', body: patch });
+      const i = devices.findIndex((d) => d.idx === idx);
+      if (i !== -1) devices[i] = result.device;
+      renderDevices();
+    } catch (e) {
+      toast('Gerät konnte nicht aktualisiert werden: ' + e.message, 'error');
+      refreshDevices();
+    }
+  }
+
+  // ---------------- settings: domoticz ----------------
+
+  async function loadSettings() {
+    try {
+      const dz = await api('/api/config/domoticz');
+      document.getElementById('dz-url').value = dz.url || '';
+      document.getElementById('dz-port').value = dz.port || '';
+      document.getElementById('dz-username').value = dz.username || '';
+      document.getElementById('dz-password').value = dz.password || '';
+    } catch (e) { /* ignore */ }
+
+    try {
+      const vshCfg = await api('/api/config/vsh');
+      document.getElementById('vsh-backend-url').value = vshCfg.backendUrl || '';
+      document.getElementById('vsh-lwa-client-id').value = vshCfg.lwaClientId || '';
+      renderVshStatus(vshCfg.status);
+    } catch (e) { /* ignore */ }
+  }
+
+  function currentDomoticzForm() {
+    return {
+      url: document.getElementById('dz-url').value,
+      port: document.getElementById('dz-port').value,
+      username: document.getElementById('dz-username').value,
+      password: document.getElementById('dz-password').value,
+    };
+  }
+
+  async function testDomoticz() {
+    const resultEl = document.getElementById('dz-test-result');
+    resultEl.textContent = 'Teste Verbindung…';
+    try {
+      const result = await api('/api/domoticz/test', { method: 'POST', body: currentDomoticzForm() });
+      resultEl.textContent = `✅ Verbunden (Domoticz Version ${result.version})`;
+      resultEl.className = 'mt-3 text-green-400';
+    } catch (e) {
+      resultEl.textContent = '❌ ' + e.message;
+      resultEl.className = 'mt-3 text-red-400';
+    }
+  }
+
+  async function saveDomoticz() {
+    try {
+      await api('/api/config/domoticz', { method: 'PUT', body: currentDomoticzForm() });
+      toast('Domoticz-Einstellungen gespeichert', 'success');
+      refreshDevices();
+    } catch (e) {
+      toast('Speichern fehlgeschlagen: ' + e.message, 'error');
+    }
+  }
+
+  // ---------------- settings: vsh ----------------
+
+  function renderVshStatus(status) {
+    if (!status) return;
+    const dot = document.getElementById('vsh-status-dot');
+    const text = document.getElementById('vsh-status-text');
+    const email = document.getElementById('vsh-status-email');
+
+    if (status.connected) {
+      dot.className = 'status-dot green';
+      text.textContent = 'Verbunden mit Alexa';
+    } else if (status.linked) {
+      dot.className = 'status-dot red';
+      text.textContent = 'Verknüpft, aber nicht verbunden';
+    } else {
+      dot.className = 'status-dot gray';
+      text.textContent = 'Nicht verbunden';
+    }
+    email.textContent = status.email ? `Amazon-Konto: ${status.email} · Plan: ${status.plan || 'unbekannt'}` : '';
+
+    document.getElementById('btn-vsh-unlink').classList.toggle('hidden', !status.linked);
+    document.getElementById('btn-vsh-link').textContent = status.linked ? 'Erneut verbinden' : 'Mit Amazon verbinden';
+
+    if (status.linking && status.linking.status === 'pending') {
+      show('vsh-link-box');
+      document.getElementById('vsh-link-url').href = status.linking.verificationUri;
+      document.getElementById('vsh-link-url').textContent = status.linking.verificationUri;
+      document.getElementById('vsh-link-code').textContent = status.linking.userCode;
+      document.getElementById('vsh-link-status').textContent = 'Warte auf Bestätigung…';
+    } else if (status.linking && status.linking.status === 'error') {
+      document.getElementById('vsh-link-status').textContent = '❌ ' + status.linking.error;
+      stopVshPolling();
+    } else {
+      hide('vsh-link-box');
+      if (vshPollTimer) stopVshPolling();
+    }
+  }
+
+  async function startVshLink() {
+    try {
+      const result = await api('/api/vsh/link/start', { method: 'POST' });
+      renderVshStatus({ linking: result.linking, linked: false, connected: false });
+      startVshPolling();
+    } catch (e) {
+      toast('Verbindung zu Amazon fehlgeschlagen: ' + e.message, 'error');
+    }
+  }
+
+  function startVshPolling() {
+    stopVshPolling();
+    vshPollTimer = setInterval(async () => {
+      try {
+        const status = await api('/api/vsh/link/status');
+        renderVshStatus(status);
+        if (!status.linking) {
+          stopVshPolling();
+          if (status.linked) toast('Erfolgreich mit Alexa verbunden!', 'success');
+        }
+      } catch (e) { /* ignore transient */ }
+    }, 3000);
+  }
+
+  function stopVshPolling() {
+    if (vshPollTimer) { clearInterval(vshPollTimer); vshPollTimer = null; }
+  }
+
+  async function testVshToken() {
+    try {
+      const result = await api('/api/vsh/test-token', { method: 'POST' });
+      toast(`VSH Token gültig (Plan: ${result.plan || 'unbekannt'})`, 'success');
+    } catch (e) {
+      toast('VSH Token ungültig: ' + e.message, 'error');
+    }
+  }
+
+  async function unlinkVsh() {
+    if (!confirm('Verbindung zu Alexa wirklich trennen?')) return;
+    try {
+      await api('/api/vsh/unlink', { method: 'POST' });
+      toast('Verbindung getrennt', 'info');
+      refreshStatus();
+    } catch (e) {
+      toast('Trennen fehlgeschlagen: ' + e.message, 'error');
+    }
+  }
+
+  async function saveVshAdvanced() {
+    try {
+      await api('/api/config/vsh', {
+        method: 'PUT',
+        body: {
+          backendUrl: document.getElementById('vsh-backend-url').value,
+          lwaClientId: document.getElementById('vsh-lwa-client-id').value,
+        },
+      });
+      toast('Gespeichert', 'success');
+    } catch (e) {
+      toast('Speichern fehlgeschlagen: ' + e.message, 'error');
+    }
+  }
+
+  // ---------------- settings: password ----------------
+
+  async function changePassword(e) {
+    e.preventDefault();
+    const currentPassword = document.getElementById('pw-current').value;
+    const newPassword = document.getElementById('pw-new').value;
+    const confirmPassword = document.getElementById('pw-confirm').value;
+    try {
+      await api('/api/auth/change-password', { method: 'POST', body: { currentPassword, newPassword, confirmPassword } });
+      toast('Passwort geändert', 'success');
+      document.getElementById('pw-form').reset();
+    } catch (e2) {
+      toast(e2.message, 'error');
+    }
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>
