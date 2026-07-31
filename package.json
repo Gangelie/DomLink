@@ -1,10 +1,11 @@
 {
   "name": "domlink",
-  "version": "1.0.0",
-  "description": "DomLink - Domoticz <-> Alexa bridge (Virtual Smart Home) with dark-mode dashboard, no Node-RED required",
+  "version": "2.0.0",
+  "description": "DomLink - Domoticz <-> Amazon Alexa bridge via a local Matter bridge, no Node-RED, no cloud required",
   "main": "server.js",
   "private": true,
   "license": "MIT",
+  "type": "module",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bmetallica/DomLink.git"
@@ -13,13 +14,14 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "@matter/main": "^0.17.7",
     "axios": "^1.7.9",
     "bcryptjs": "^2.4.3",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
-    "mqtt": "^5.10.3"
+    "qrcode": "^1.5.4"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.13.0"
   }
 }

@@ -1,7 +1,7 @@
 node_modules/
 
-# Runtime data: contains your Domoticz credentials, VSH/MQTT certificates and
-# session secret - never commit this.
+# Runtime data: contains your Domoticz credentials, Matter fabric/commissioning
+# state and session secret - never commit this.
 data/
 
 *.log

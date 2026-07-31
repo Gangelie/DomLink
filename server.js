@@ -1,13 +1,17 @@
-const express = require('express');
-const session = require('express-session');
-const path = require('path');
+import express from 'express';
+import session from 'express-session';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const configStore = require('./lib/config');
-const { createAuthRouter, requireAuth } = require('./lib/auth');
-const DomoticzClient = require('./lib/domoticz');
-const DeviceStore = require('./lib/deviceStore');
-const VshBridge = require('./lib/vsh');
-const { ALEXA_TYPES } = require('./lib/deviceTypes');
+import * as configStore from './lib/config.js';
+import { createAuthRouter, requireAuth } from './lib/auth.js';
+import DomoticzClient from './lib/domoticz.js';
+import DeviceStore from './lib/deviceStore.js';
+import MatterBridge from './lib/matterBridge.js';
+import { ALEXA_TYPES } from './lib/deviceTypes.js';
+import * as eventLog from './lib/eventLog.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = process.env.PORT || 3000;
 const POLL_INTERVAL_MS = Number(process.env.DOMOTICZ_POLL_INTERVAL_MS || 25000);
@@ -17,7 +21,7 @@ const persist = () => configStore.save(cfg);
 
 const domoticz = new DomoticzClient(() => cfg.domoticz);
 const deviceStore = new DeviceStore({ cfg, persist, domoticz });
-const vsh = new VshBridge({ cfg, persist, deviceStore, logger: console });
+const matter = new MatterBridge({ deviceStore, dataDir: configStore.DATA_DIR, logger: console });
 
 const domoticzState = { online: false, lastError: null, lastCheckedAt: null };
 
@@ -58,7 +62,7 @@ app.use('/api', requireAuth);
 app.get('/api/status', (req, res) => {
   res.json({
     domoticz: domoticzState,
-    vsh: vsh.getStatus(),
+    matter: matter.getStatus(),
   });
 });
 
@@ -99,54 +103,49 @@ app.post('/api/domoticz/test', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------
-// VSH / Alexa settings
+// Matter bridge
 // ---------------------------------------------------------------------
-app.get('/api/config/vsh', (req, res) => {
-  res.json({
-    backendUrl: cfg.vsh.backendUrl,
-    lwaClientId: cfg.vsh.lwaClientId,
-    status: vsh.getStatus(),
+app.get('/api/matter/status', async (req, res) => {
+  const status = matter.getStatus();
+  const qrDataUrl = status.pairingCode ? await matter.getPairingQrCodeDataUrl() : null;
+  res.json({ ...status, qrDataUrl });
+});
+
+app.post('/api/matter/reset', async (req, res) => {
+  try {
+    await matter.resetCommissioning();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------
+// Live-Protokoll (Server-Sent Events)
+// ---------------------------------------------------------------------
+app.get('/api/log/stream', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
   });
-});
+  res.write('\n');
 
-app.put('/api/config/vsh', (req, res) => {
-  const { backendUrl, lwaClientId } = req.body || {};
-  if (backendUrl) cfg.vsh.backendUrl = backendUrl.trim();
-  if (lwaClientId) cfg.vsh.lwaClientId = lwaClientId.trim();
-  persist();
-  res.json({ ok: true });
-});
-
-app.post('/api/vsh/link/start', async (req, res) => {
-  try {
-    const linking = await vsh.startLinking();
-    res.json({ ok: true, linking });
-  } catch (err) {
-    res.status(400).json({ ok: false, error: err.message });
+  for (const entry of eventLog.getBuffer()) {
+    res.write(`data: ${JSON.stringify(entry)}\n\n`);
   }
-});
 
-app.get('/api/vsh/link/status', (req, res) => {
-  res.json(vsh.getStatus());
-});
+  const unsubscribe = eventLog.onEntry((entry) => {
+    res.write(`data: ${JSON.stringify(entry)}\n\n`);
+  });
 
-app.post('/api/vsh/link/cancel', (req, res) => {
-  vsh.cancelLinking();
-  res.json({ ok: true });
-});
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), 20000);
 
-app.post('/api/vsh/unlink', async (req, res) => {
-  await vsh.unlink();
-  res.json({ ok: true });
-});
-
-app.post('/api/vsh/test-token', async (req, res) => {
-  try {
-    const result = await vsh.testToken();
-    res.json({ ok: true, ...result });
-  } catch (err) {
-    res.status(400).json({ ok: false, error: err.message });
-  }
+  req.on('close', () => {
+    unsubscribe();
+    clearInterval(heartbeat);
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -178,22 +177,24 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`DomLink läuft auf Port ${PORT}`);
 
-  pollDomoticz();
+  // Matter registers currently-active devices once at startup, so the
+  // deviceStore must be populated from a real Domoticz poll first - starting
+  // both in parallel is a race that silently drops whichever active devices
+  // haven't loaded yet.
+  await pollDomoticz();
   setInterval(pollDomoticz, POLL_INTERVAL_MS);
 
-  if (vsh.isLinked()) {
-    vsh.connect().catch((err) => console.error('VSH: Verbindung beim Start fehlgeschlagen:', err.message));
-  }
+  matter.start().catch((err) => console.error('Matter: Start fehlgeschlagen:', err.message));
 });
 
 process.on('SIGTERM', async () => {
-  await vsh.disconnect();
+  await matter.stop();
   process.exit(0);
 });
 process.on('SIGINT', async () => {
-  await vsh.disconnect();
+  await matter.stop();
   process.exit(0);
 });

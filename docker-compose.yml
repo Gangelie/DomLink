@@ -4,11 +4,17 @@ services:
     image: domlink:latest
     container_name: domlink
     restart: unless-stopped
-    ports:
-      - "3001:3000"
+    # Matter commissioning needs mDNS multicast (UDP 5353) and the Matter
+    # operational port reachable directly on the LAN - Docker's default
+    # bridge/NAT networking blocks multicast traversal, so this container
+    # needs the host's network stack directly (Linux only).
+    network_mode: host
     volumes:
       - ./data:/app/data
     environment:
-      - PORT=3000
+      - PORT=3001
       - DATA_DIR=/app/data
+      # 5540 is Matter's conventional port, but already taken here by the
+      # existing matterbridge.service (Zigbee2MQTT -> Matter) - use 5541.
+      - MATTER_PORT=5541
       # - COOKIE_SECURE=true   # aktivieren, wenn die App hinter HTTPS/TLS läuft

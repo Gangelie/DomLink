@@ -99,8 +99,8 @@
       <div class="flex items-center gap-2" title="Domoticz Verbindung">
         <span id="dot-domoticz" class="status-dot gray"></span> Domoticz
       </div>
-      <div class="flex items-center gap-2" title="VSH Alexa Bridge">
-        <span id="dot-vsh" class="status-dot gray"></span> Alexa Bridge
+      <div class="flex items-center gap-2" title="Matter Bridge">
+        <span id="dot-matter" class="status-dot gray"></span> Matter Bridge
       </div>
       <button id="btn-logout" class="bg-surface2 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-1.5 transition">Abmelden</button>
     </div>
@@ -114,6 +114,7 @@
     <button data-tab="blinds" class="tab-btn py-3 whitespace-nowrap">🪟 Rollläden / Jalousien</button>
     <button data-tab="sensors" class="tab-btn py-3 whitespace-nowrap">🌡️ Sensoren &amp; Thermostate</button>
     <button data-tab="meters" class="tab-btn py-3 whitespace-nowrap">🔢 Zähler</button>
+    <button data-tab="log" class="tab-btn py-3 whitespace-nowrap">📋 Live-Protokoll</button>
     <button data-tab="settings" class="tab-btn py-3 whitespace-nowrap">⚙️ Einstellungen</button>
   </nav>
 
@@ -126,7 +127,7 @@
         <button id="btn-refresh-devices" class="bg-surface2 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-1.5 transition text-gray-200">↻ Aktualisieren</button>
       </div>
       <p id="meter-hint" class="hidden text-gray-400 bg-surface2 border border-white/10 rounded-lg px-4 py-3 mb-4">
-        Zähler haben in Alexa keine eigene Kategorie. Um einen Wert trotzdem per Sprachbefehl abfragen zu können, setze bei „Alexa Typ" <strong class="text-gray-200">Temperatursensor</strong> und wähle rechts den gewünschten Quellwert (z.&nbsp;B. Momentanverbrauch in Watt). Alexa nennt den Wert dann in „Grad" (z.&nbsp;B. „372 Grad" für 372 Watt) — das ist eine Einschränkung von Alexa selbst, nicht von DomLink.
+        Zähler haben in Matter/Alexa keine eigene Kategorie. Um einen Wert trotzdem per Sprachbefehl abfragen zu können, setze bei „Alexa Typ" <strong class="text-gray-200">Temperatursensor</strong> und wähle rechts den gewünschten Quellwert. Alexa nennt den Wert dann in „Grad" — das funktioniert nur sinnvoll für Werte zwischen etwa -270 und 327 (z.&nbsp;B. Momentanverbrauch in Watt bei kleineren Verbrauchern); größere Werte wie Gesamt-kWh-Zählerstände werden auf 327 gekappt und ergeben keinen sinnvollen Wert.
       </p>
       <div class="bg-surface border border-white/10 rounded-xl overflow-hidden">
         <div class="overflow-x-auto">
@@ -180,41 +181,25 @@
       </div>
 
       <div class="bg-surface border border-white/10 rounded-xl p-5">
-        <h2 class="text-white font-semibold mb-1">Virtual Smart Home (Alexa)</h2>
-        <p class="text-gray-500 mb-4">Verbindet diese App direkt (ohne Node-RED) über die VSH-Cloud mit Alexa. Die Anmeldung erfolgt per Amazon-Gerätecode.</p>
+        <h2 class="text-white font-semibold mb-1">Matter Bridge (Alexa)</h2>
+        <p class="text-gray-500 mb-4">Verbindet diese App direkt und lokal (ohne Node-RED, ohne Cloud-Konto) über Matter mit Alexa. Einmalig über die Alexa-App koppeln.</p>
 
-        <div id="vsh-status-box" class="rounded-lg border border-white/10 bg-surface2 p-4 mb-4 text-gray-300">
-          <div class="flex items-center gap-2 mb-1"><span id="vsh-status-dot" class="status-dot gray"></span> <span id="vsh-status-text">Nicht verbunden</span></div>
-          <div id="vsh-status-email" class="text-gray-500"></div>
+        <div id="matter-status-box" class="rounded-lg border border-white/10 bg-surface2 p-4 mb-4 text-gray-300">
+          <div class="flex items-center gap-2 mb-1"><span id="matter-status-dot" class="status-dot gray"></span> <span id="matter-status-text">Bridge startet…</span></div>
+          <div id="matter-status-devicecount" class="text-gray-500 mt-1"></div>
         </div>
 
-        <div id="vsh-link-box" class="hidden rounded-lg border border-dashed border-accent p-4 mb-4 text-center">
-          <p class="text-gray-400 mb-2">Öffne den folgenden Link und gib den Code ein:</p>
-          <a id="vsh-link-url" target="_blank" class="text-accent underline break-all"></a>
-          <p class="text-3xl font-mono tracking-widest text-white my-3" id="vsh-link-code">----</p>
-          <p id="vsh-link-status" class="text-gray-500">Warte auf Bestätigung…</p>
+        <div id="matter-pairing-box" class="hidden rounded-lg border border-dashed border-accent p-4 mb-4 text-center">
+          <p class="text-gray-400 mb-3">In der Alexa-App: <strong class="text-gray-200">Gerät hinzufügen → Weiteres → Matter-fähiges Gerät</strong>, dann Code scannen oder eingeben.</p>
+          <img id="matter-qr" class="mx-auto rounded-lg bg-white p-2" width="200" height="200" alt="Matter QR-Code" />
+          <p class="text-gray-500 mt-3 mb-1">Manueller Code:</p>
+          <p class="text-2xl font-mono tracking-widest text-white" id="matter-manual-code">----</p>
         </div>
 
         <div class="flex gap-3 flex-wrap">
-          <button id="btn-vsh-link" class="bg-accent hover:bg-blue-500 text-white rounded-lg px-4 py-2 transition">Mit Amazon verbinden</button>
-          <button id="btn-vsh-test" class="bg-surface2 hover:bg-white/10 border border-white/10 rounded-lg px-4 py-2 transition">VSH Token prüfen</button>
-          <button id="btn-vsh-unlink" class="hidden bg-red-900/40 hover:bg-red-900/60 border border-red-800 text-red-300 rounded-lg px-4 py-2 transition">Trennen</button>
+          <button id="btn-matter-reset" class="bg-red-900/40 hover:bg-red-900/60 border border-red-800 text-red-300 rounded-lg px-4 py-2 transition">Bridge zurücksetzen</button>
         </div>
-
-        <details class="mt-5">
-          <summary class="text-gray-500 cursor-pointer">Erweitert: Backend-URL / LWA Client-ID</summary>
-          <div class="grid sm:grid-cols-2 gap-4 mt-3">
-            <div>
-              <label class="block text-gray-400 mb-1">VSH Backend-URL</label>
-              <input id="vsh-backend-url" type="text" class="w-full rounded-lg px-3 py-2" />
-            </div>
-            <div>
-              <label class="block text-gray-400 mb-1">LWA Client-ID</label>
-              <input id="vsh-lwa-client-id" type="text" class="w-full rounded-lg px-3 py-2" />
-            </div>
-          </div>
-          <button id="btn-vsh-adv-save" class="mt-3 bg-surface2 hover:bg-white/10 border border-white/10 rounded-lg px-4 py-2 transition">Speichern</button>
-        </details>
+        <p class="text-gray-600 mt-2">Setzt die Matter-Kopplung zurück, falls du die Bridge neu (z.&nbsp;B. mit einem anderen Ökosystem) koppeln möchtest. Bereits gekoppelte Controller verlieren dabei die Verbindung.</p>
       </div>
 
       <div class="bg-surface border border-white/10 rounded-xl p-5">
@@ -238,6 +223,19 @@
         </form>
       </div>
 
+    </section>
+
+    <!-- Live-Protokoll -->
+    <section id="view-log" class="hidden">
+      <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div class="flex items-center gap-2 text-gray-400">
+          <span id="log-status-dot" class="status-dot gray"></span>
+          <span id="log-status-text">Verbinde…</span>
+        </div>
+        <button id="btn-log-clear" class="bg-surface2 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-1.5 transition text-gray-200">Anzeige leeren</button>
+      </div>
+      <div id="log-panel" class="bg-surface border border-white/10 rounded-xl p-3 h-[65vh] overflow-y-auto font-mono text-xs space-y-1"></div>
+      <p class="text-gray-600 mt-2">Zeigt live, welche Befehle von Alexa (Matter) ankommen, was daraufhin an Domoticz gesendet wird, und Statusänderungen in die Gegenrichtung. Nicht dauerhaft gespeichert.</p>
     </section>
   </main>
 </div>
@@ -268,7 +266,7 @@
   let currentTab = 'all';
   let devices = [];
   let alexaTypes = Object.keys(ALEXA_TYPE_LABELS);
-  let vshPollTimer = null;
+  let matterPollTimer = null;
 
   // ---------------- helpers ----------------
 
@@ -381,12 +379,12 @@
     document.getElementById('btn-dz-test').addEventListener('click', testDomoticz);
     document.getElementById('btn-dz-save').addEventListener('click', saveDomoticz);
 
-    document.getElementById('btn-vsh-link').addEventListener('click', startVshLink);
-    document.getElementById('btn-vsh-test').addEventListener('click', testVshToken);
-    document.getElementById('btn-vsh-unlink').addEventListener('click', unlinkVsh);
-    document.getElementById('btn-vsh-adv-save').addEventListener('click', saveVshAdvanced);
+    document.getElementById('btn-matter-reset').addEventListener('click', resetMatterBridge);
 
     document.getElementById('pw-form').addEventListener('submit', changePassword);
+    document.getElementById('btn-log-clear').addEventListener('click', () => {
+      document.getElementById('log-panel').innerHTML = '';
+    });
 
     loadSettings();
     refreshDevices();
@@ -397,12 +395,79 @@
   function selectTab(tab) {
     currentTab = tab;
     document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+    hide('view-devices'); hide('view-settings'); hide('view-log');
     if (tab === 'settings') {
-      hide('view-devices'); show('view-settings');
+      show('view-settings');
+    } else if (tab === 'log') {
+      show('view-log');
+      connectLogStream();
     } else {
-      show('view-devices'); hide('view-settings');
+      show('view-devices');
       document.getElementById('meter-hint').classList.toggle('hidden', tab !== 'meters');
       renderDevices();
+    }
+    if (tab !== 'log') disconnectLogStream();
+  }
+
+  // ---------------- live log ----------------
+
+  let logEventSource = null;
+  const LOG_STYLES = {
+    'matter-info': 'text-accent',
+    'matter-warn': 'text-amber-400',
+    'matter-error': 'text-red-400',
+    'domoticz-info': 'text-green-400',
+    'domoticz-warn': 'text-amber-400',
+    'domoticz-error': 'text-red-400',
+  };
+
+  function connectLogStream() {
+    if (logEventSource) return;
+    const dot = document.getElementById('log-status-dot');
+    const text = document.getElementById('log-status-text');
+
+    logEventSource = new EventSource('/api/log/stream');
+
+    logEventSource.onopen = () => {
+      dot.className = 'status-dot green';
+      text.textContent = 'Live verbunden';
+    };
+    logEventSource.onerror = () => {
+      dot.className = 'status-dot red';
+      text.textContent = 'Verbindung unterbrochen — versuche erneut…';
+    };
+    logEventSource.onmessage = (e) => {
+      try {
+        appendLogEntry(JSON.parse(e.data));
+      } catch (err) { /* ignore malformed entry */ }
+    };
+  }
+
+  function disconnectLogStream() {
+    if (logEventSource) {
+      logEventSource.close();
+      logEventSource = null;
+    }
+  }
+
+  function appendLogEntry(entry) {
+    const panel = document.getElementById('log-panel');
+    const wasAtBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 40;
+
+    const time = new Date(entry.ts).toLocaleTimeString('de-DE');
+    const cls = LOG_STYLES[`${entry.source}-${entry.level}`] || 'text-gray-400';
+
+    const line = document.createElement('div');
+    line.className = cls;
+    line.textContent = `[${time}] ${entry.message}`;
+    panel.appendChild(line);
+
+    while (panel.childElementCount > 500) {
+      panel.removeChild(panel.firstChild);
+    }
+
+    if (wasAtBottom) {
+      panel.scrollTop = panel.scrollHeight;
     }
   }
 
@@ -412,8 +477,8 @@
     try {
       const status = await api('/api/status');
       setDot('dot-domoticz', status.domoticz.online ? 'green' : 'red');
-      setDot('dot-vsh', status.vsh.connected ? 'green' : (status.vsh.linked ? 'red' : 'gray'));
-      renderVshStatus(status.vsh);
+      setDot('dot-matter', status.matter.commissioned ? 'green' : (status.matter.running ? 'red' : 'gray'));
+      renderMatterStatusBrief(status.matter);
     } catch (e) { /* transient */ }
   }
 
@@ -550,12 +615,7 @@
       document.getElementById('dz-password').value = dz.password || '';
     } catch (e) { /* ignore */ }
 
-    try {
-      const vshCfg = await api('/api/config/vsh');
-      document.getElementById('vsh-backend-url').value = vshCfg.backendUrl || '';
-      document.getElementById('vsh-lwa-client-id').value = vshCfg.lwaClientId || '';
-      renderVshStatus(vshCfg.status);
-    } catch (e) { /* ignore */ }
+    loadMatterStatus();
   }
 
   function currentDomoticzForm() {
@@ -590,104 +650,75 @@
     }
   }
 
-  // ---------------- settings: vsh ----------------
+  // ---------------- settings: matter ----------------
 
-  function renderVshStatus(status) {
-    if (!status) return;
-    const dot = document.getElementById('vsh-status-dot');
-    const text = document.getElementById('vsh-status-text');
-    const email = document.getElementById('vsh-status-email');
-
-    if (status.connected) {
-      dot.className = 'status-dot green';
-      text.textContent = 'Verbunden mit Alexa';
-    } else if (status.linked) {
-      dot.className = 'status-dot red';
-      text.textContent = 'Verknüpft, aber nicht verbunden';
-    } else {
-      dot.className = 'status-dot gray';
-      text.textContent = 'Nicht verbunden';
-    }
-    email.textContent = status.email ? `Amazon-Konto: ${status.email} · Plan: ${status.plan || 'unbekannt'}` : '';
-
-    document.getElementById('btn-vsh-unlink').classList.toggle('hidden', !status.linked);
-    document.getElementById('btn-vsh-link').textContent = status.linked ? 'Erneut verbinden' : 'Mit Amazon verbinden';
-
-    if (status.linking && status.linking.status === 'pending') {
-      show('vsh-link-box');
-      document.getElementById('vsh-link-url').href = status.linking.verificationUri;
-      document.getElementById('vsh-link-url').textContent = status.linking.verificationUri;
-      document.getElementById('vsh-link-code').textContent = status.linking.userCode;
-      document.getElementById('vsh-link-status').textContent = 'Warte auf Bestätigung…';
-    } else if (status.linking && status.linking.status === 'error') {
-      document.getElementById('vsh-link-status').textContent = '❌ ' + status.linking.error;
-      stopVshPolling();
-    } else {
-      hide('vsh-link-box');
-      if (vshPollTimer) stopVshPolling();
-    }
+  function renderMatterStatusBrief(status) {
+    const devCountEl = document.getElementById('matter-status-devicecount');
+    if (!devCountEl || !status.running) return;
+    devCountEl.textContent = `${status.deviceCount} Gerät(e) gebrückt`;
   }
 
-  async function startVshLink() {
+  async function loadMatterStatus() {
     try {
-      const result = await api('/api/vsh/link/start', { method: 'POST' });
-      renderVshStatus({ linking: result.linking, linked: false, connected: false });
-      startVshPolling();
-    } catch (e) {
-      toast('Verbindung zu Amazon fehlgeschlagen: ' + e.message, 'error');
+      const status = await api('/api/matter/status');
+      renderMatterStatus(status);
+    } catch (e) { /* ignore */ }
+  }
+
+  function renderMatterStatus(status) {
+    const dot = document.getElementById('matter-status-dot');
+    const text = document.getElementById('matter-status-text');
+    const devCountEl = document.getElementById('matter-status-devicecount');
+
+    if (!status.running) {
+      dot.className = 'status-dot gray';
+      text.textContent = 'Bridge startet…';
+    } else if (status.commissioned) {
+      dot.className = 'status-dot green';
+      text.textContent = 'Mit Alexa (Matter) gekoppelt';
+    } else {
+      dot.className = 'status-dot red';
+      text.textContent = 'Bereit zur Kopplung';
+    }
+    devCountEl.textContent = status.running ? `${status.deviceCount} Gerät(e) gebrückt` : '';
+
+    if (status.pairingCode) {
+      show('matter-pairing-box');
+      document.getElementById('matter-manual-code').textContent = status.pairingCode.manual;
+      document.getElementById('matter-qr').src = status.qrDataUrl || '';
+      if (!matterPollTimer) startMatterPolling();
+    } else {
+      hide('matter-pairing-box');
+      stopMatterPolling();
     }
   }
 
-  function startVshPolling() {
-    stopVshPolling();
-    vshPollTimer = setInterval(async () => {
+  function startMatterPolling() {
+    stopMatterPolling();
+    matterPollTimer = setInterval(async () => {
       try {
-        const status = await api('/api/vsh/link/status');
-        renderVshStatus(status);
-        if (!status.linking) {
-          stopVshPolling();
-          if (status.linked) toast('Erfolgreich mit Alexa verbunden!', 'success');
+        const status = await api('/api/matter/status');
+        renderMatterStatus(status);
+        if (status.commissioned) {
+          stopMatterPolling();
+          toast('Erfolgreich mit Alexa (Matter) gekoppelt!', 'success');
         }
       } catch (e) { /* ignore transient */ }
-    }, 3000);
+    }, 4000);
   }
 
-  function stopVshPolling() {
-    if (vshPollTimer) { clearInterval(vshPollTimer); vshPollTimer = null; }
+  function stopMatterPolling() {
+    if (matterPollTimer) { clearInterval(matterPollTimer); matterPollTimer = null; }
   }
 
-  async function testVshToken() {
+  async function resetMatterBridge() {
+    if (!confirm('Matter-Bridge wirklich zurücksetzen? Bereits gekoppelte Controller (z. B. Alexa) verlieren die Verbindung.')) return;
     try {
-      const result = await api('/api/vsh/test-token', { method: 'POST' });
-      toast(`VSH Token gültig (Plan: ${result.plan || 'unbekannt'})`, 'success');
+      await api('/api/matter/reset', { method: 'POST' });
+      toast('Bridge zurückgesetzt, neuer Kopplungscode wird geladen…', 'info');
+      setTimeout(loadMatterStatus, 1500);
     } catch (e) {
-      toast('VSH Token ungültig: ' + e.message, 'error');
-    }
-  }
-
-  async function unlinkVsh() {
-    if (!confirm('Verbindung zu Alexa wirklich trennen?')) return;
-    try {
-      await api('/api/vsh/unlink', { method: 'POST' });
-      toast('Verbindung getrennt', 'info');
-      refreshStatus();
-    } catch (e) {
-      toast('Trennen fehlgeschlagen: ' + e.message, 'error');
-    }
-  }
-
-  async function saveVshAdvanced() {
-    try {
-      await api('/api/config/vsh', {
-        method: 'PUT',
-        body: {
-          backendUrl: document.getElementById('vsh-backend-url').value,
-          lwaClientId: document.getElementById('vsh-lwa-client-id').value,
-        },
-      });
-      toast('Gespeichert', 'success');
-    } catch (e) {
-      toast('Speichern fehlgeschlagen: ' + e.message, 'error');
+      toast('Zurücksetzen fehlgeschlagen: ' + e.message, 'error');
     }
   }
 
