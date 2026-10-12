@@ -103,6 +103,47 @@ test('Matter Group sends On and Off and does not receive an automatic state rese
   assert.equal(h.store.getByDeviceId(group.deviceId).state.powerState, 'OFF');
 });
 
+test('thermostat sensor updates push measured value only and never write SetPoint', async () => {
+  const thermostat = { idx: '60', Name: 'Thermostat', Type: 'Thermostat', Temp: '19.75', SetPoint: '21' };
+  const sensor = { idx: '61', Name: 'External', Type: 'Temp', Temp: '18.25' };
+  const commands = [];
+  const store = new DeviceStore({ cfg: { devices: {} }, persist() {}, domoticz: {
+    getDevices: async () => [sensor, thermostat],
+    setSetpoint: async (...args) => commands.push(args),
+  } });
+  const bridge = new MatterBridge({ deviceStore: store, dataDir: '/tmp/domlink-test', logger: { error() {}, log() {} } });
+  assert.deepEqual(bridge._stateToClusterPatch('THERMOSTAT', { temperature: 18.25, targetTemperature: 21 }).thermostat, {
+    localTemperature: 1825, occupiedHeatingSetpoint: 2100, systemMode: 4, controlSequenceOfOperation: 2,
+  });
+  assert.equal(bridge._stateToClusterPatch('THERMOSTAT', { temperature: null, targetTemperature: 21 }).thermostat.localTemperature, null);
+  assert.equal(bridge._stateToClusterPatch('THERMOSTAT', { temperature: 0, targetTemperature: 21 }).thermostat.localTemperature, 0);
+  await store.refresh();
+  store.updateDeviceConfig('60', { active: true, temperatureSourceIdx: '61' });
+  const endpointWrites = [];
+  bridge.endpoints.set('domlink-60', { set: async (patch) => endpointWrites.push(patch) });
+  // Run the mocked endpoint through the same store change path without the
+  // constructor's fire-and-forget listener, so assertions are deterministic.
+  store.removeAllListeners('change');
+  const prior = { ...store.getByDeviceId('domlink-60').state };
+  sensor.Temp = '18.5';
+  await store.refresh();
+  assert.equal(store.getByDeviceId('domlink-60').state.temperature, 18.5);
+  await bridge._onDomoticzChanges([{
+    idx: '60', deviceId: 'domlink-60', template: 'THERMOSTAT', oldState: prior,
+    newState: store.getByDeviceId('domlink-60').state,
+  }]);
+  assert.equal(endpointWrites[0].thermostat.localTemperature, 1850);
+  assert.equal(endpointWrites[0].thermostat.occupiedHeatingSetpoint, 2100);
+
+  const unavailableState = { ...store.getByDeviceId('domlink-60').state, temperature: null };
+  await bridge._onDomoticzChanges([{ deviceId: 'domlink-60', template: 'THERMOSTAT', newState: unavailableState }]);
+  const zeroState = { ...unavailableState, temperature: 0 };
+  await bridge._onDomoticzChanges([{ deviceId: 'domlink-60', template: 'THERMOSTAT', newState: zeroState }]);
+  assert.deepEqual(endpointWrites.slice(1).map((write) => write.thermostat.localTemperature), [null, 0]);
+  assert.ok(endpointWrites.every((write) => write.thermostat.occupiedHeatingSetpoint === 2100));
+  assert.deepEqual(commands, []);
+});
+
 test('Matter Group reports Domoticz Mixed status as On', async () => {
   const h = harness({ idx: '45', Name: 'Group', Type: 'Group', Status: 'Mixed' });
   const group = await activate(h, '45');
