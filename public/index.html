@@ -509,7 +509,7 @@
       parts.push(selected ? `${selected.label} (${s.brightness}%)` : s.brightness + '%');
     }
     if (s.percentage !== undefined) parts.push(s.percentage + '%');
-    if (s.temperature !== undefined) parts.push(s.temperature + '°C');
+    if (s.temperature !== undefined) parts.push(s.temperature === null ? 'Ist: nicht verfügbar' : 'Ist: ' + s.temperature + '°C');
     if (s.targetTemperature !== undefined) parts.push('Soll: ' + s.targetTemperature + '°C');
     if (s.value !== undefined) parts.push(String(s.value));
     return parts.join(' · ') || '–';
@@ -573,7 +573,33 @@
 
       const tdField = document.createElement('td');
       tdField.className = 'px-4 py-3';
-      if (d.alexaType === 'TEMPERATURE_SENSOR' && d.availableFields && d.availableFields.length > 1) {
+      if (d.alexaType === 'THERMOSTAT') {
+        const sourceSelect = document.createElement('select');
+        sourceSelect.className = 'rounded-lg px-2 py-1.5';
+        const own = document.createElement('option');
+        own.value = '';
+        own.textContent = 'Thermostat-Temp (Standard)';
+        own.selected = !d.temperatureSourceIdx;
+        sourceSelect.appendChild(own);
+        for (const source of d.temperatureSources || []) {
+          const option = document.createElement('option');
+          option.value = source.idx;
+          option.textContent = `${source.name} (IDX ${source.idx})`;
+          option.selected = String(d.temperatureSourceIdx) === String(source.idx);
+          sourceSelect.appendChild(option);
+        }
+        if (d.temperatureSourceIdx && !(d.temperatureSources || []).some((source) => String(source.idx) === String(d.temperatureSourceIdx))) {
+          const unavailable = document.createElement('option');
+          unavailable.value = d.temperatureSourceIdx;
+          unavailable.textContent = `Gespeicherte Quelle (IDX ${d.temperatureSourceIdx}) – nicht verfügbar`;
+          unavailable.selected = true;
+          sourceSelect.appendChild(unavailable);
+        }
+        sourceSelect.setAttribute('aria-label', 'Isttemperatur-Quelle');
+        sourceSelect.addEventListener('change', () => updateDevice(d.idx, { temperatureSourceIdx: sourceSelect.value || null }));
+        tdField.appendChild(document.createTextNode('Isttemperatur-Quelle '));
+        tdField.appendChild(sourceSelect);
+      } else if (d.alexaType === 'TEMPERATURE_SENSOR' && d.availableFields && d.availableFields.length > 1) {
         const fieldSelect = document.createElement('select');
         fieldSelect.className = 'rounded-lg px-2 py-1.5';
         for (const f of d.availableFields) {

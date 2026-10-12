@@ -25,6 +25,19 @@ Matter brightness is limited to 0-100%; larger Domoticz selectors are not
 completely representable. If `LevelNames` are missing, levels are snapped
 to 0,10,...,100 as a compatibility fallback.
 
+## External thermostat temperature source
+
+Each thermostat can optionally select an `Isttemperatur-Quelle` in the device
+table. The default uses its own Domoticz `Temp`; an external source must be a
+temperature or combined temperature/humidity device with a finite numeric
+`Temp`, visible through the configured Domoticz connection. It does not need
+to be active in Matter. DomLink combines that reading with the original
+thermostat's `SetPoint`, and resolves both from each full device snapshot so
+response ordering does not matter. Missing or invalid measurements are shown
+as unavailable and sent to Matter as null; a real 0°C remains valid. The
+selection is stored as `temperatureSourceIdx` in `config.json` and creates no
+Matter endpoint. Only target-temperature writes call Domoticz `setsetpoint`.
+
 ## Test plan
 
 1. `npm ci && npm test`; inspect GitHub Actions status.

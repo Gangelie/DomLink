@@ -26,6 +26,12 @@ or change persistent `data/` storage.
    Matter template, thus avoiding endpoint recreation.
 6. The **Alexa routines and names** are configured outside DomLink. A Matter
    dimmer cannot natively understand human-readable HVAC mode words.
+7. Thermostats may set `temperatureSourceIdx` to a visible Domoticz device with
+   a finite numeric `Temp` field and a temperature or humidity device type.
+   The default remains the thermostat's own `Temp`; external readings never
+   change its SetPoint command or Matter endpoint identity. Resolve readings
+   from the complete `getDevices()` snapshot, including inactive Matter
+   devices, and report unavailable measurements as null (never 0°C).
 
 ## Operational safety
 - Never execute real Home Alarm OnActions from tests. Use mocked Domoticz APIs.
@@ -36,3 +42,5 @@ or change persistent `data/` storage.
 - For a live release, back up mounted `data/` and test with a noncritical scene
   before activating the alarm scene. Only update production on user's request.
 - Review upstream changes before rebasing; preserve MIT attribution.
+- Thermostat temperature-source tests must use mocked Domoticz APIs; sensor
+  updates must never issue `setsetpoint`.
