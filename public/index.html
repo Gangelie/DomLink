@@ -245,7 +245,7 @@
   'use strict';
 
   const ALEXA_TYPE_LABELS = {
-    SWITCH: 'Schalter', LIGHT: 'Licht', DIMMER: 'Dimmer',
+    SWITCH: 'Schalter', LIGHT: 'Licht', DIMMER: 'Dimmer', SELECTOR: 'Selector (Stufen)',
     BLIND: 'Rollladen', TEMPERATURE_SENSOR: 'Temperatursensor', THERMOSTAT: 'Thermostat',
     METER: 'Zähler',
   };
@@ -256,7 +256,7 @@
   };
   const TAB_FILTERS = {
     all: () => true,
-    lights: (d) => d.alexaType === 'LIGHT' || d.alexaType === 'DIMMER',
+    lights: (d) => d.alexaType === 'LIGHT' || d.alexaType === 'DIMMER' || d.alexaType === 'SELECTOR',
     switches: (d) => d.alexaType === 'SWITCH',
     blinds: (d) => d.alexaType === 'BLIND',
     sensors: (d) => d.alexaType === 'TEMPERATURE_SENSOR' || d.alexaType === 'THERMOSTAT',
@@ -504,7 +504,10 @@
     const s = d.state || {};
     const parts = [];
     if (s.powerState !== undefined) parts.push(s.powerState === 'ON' ? 'An' : 'Aus');
-    if (s.brightness !== undefined) parts.push(s.brightness + '%');
+    if (s.brightness !== undefined) {
+      const selected = (d.selectorLevels || []).find((item) => item.level === s.brightness);
+      parts.push(selected ? `${selected.label} (${s.brightness}%)` : s.brightness + '%');
+    }
     if (s.percentage !== undefined) parts.push(s.percentage + '%');
     if (s.temperature !== undefined) parts.push(s.temperature + '°C');
     if (s.targetTemperature !== undefined) parts.push('Soll: ' + s.targetTemperature + '°C');
@@ -582,6 +585,11 @@
         }
         fieldSelect.addEventListener('change', () => updateDevice(d.idx, { valueField: fieldSelect.value }));
         tdField.appendChild(fieldSelect);
+      } else if (d.selectorLevels && d.selectorLevels.length > 0) {
+        const description = d.selectorLevels.map((item) => `${item.level}% = ${item.label}`).join(' · ');
+        tdField.className += ' text-xs text-gray-400';
+        tdField.textContent = description;
+        tdField.title = description;
       } else {
         tdField.className += ' text-gray-600';
         tdField.textContent = '–';

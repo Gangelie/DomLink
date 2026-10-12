@@ -11,7 +11,8 @@
     "url": "git+https://github.com/bmetallica/DomLink.git"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@matter/main": "^0.17.7",
