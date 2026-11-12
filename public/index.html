@@ -37,6 +37,7 @@
 
   .status-dot { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
   .status-dot.green { background-color: #22c55e; box-shadow: 0 0 6px #22c55e; }
+  .status-dot.yellow { background-color: #eab308; box-shadow: 0 0 6px #eab308; }
   .status-dot.red { background-color: #ef4444; box-shadow: 0 0 6px #ef4444; }
   .status-dot.gray { background-color: #6b7280; }
 
@@ -96,9 +97,9 @@
   <header class="bg-surface border-b border-white/10 px-4 sm:px-6 py-3 flex items-center justify-between gap-4 flex-wrap">
     <h1 class="text-lg font-semibold text-white whitespace-nowrap">🏠 DomLink</h1>
     <div class="flex items-center gap-5 text-xs text-gray-300 flex-wrap">
-      <div class="flex items-center gap-2" title="Domoticz Verbindung">
+      <button id="btn-domoticz-diagnostics" type="button" aria-haspopup="true" aria-controls="domoticz-diagnostics" class="flex items-center gap-2 hover:text-white focus:outline-none focus:ring-2 focus:ring-accent rounded" title="Domoticz Verbindung prüfen">
         <span id="dot-domoticz" class="status-dot gray"></span> Domoticz
-      </div>
+      </button>
       <div class="flex items-center gap-2" title="Matter Bridge">
         <span id="dot-matter" class="status-dot gray"></span> Matter Bridge
       </div>
@@ -178,6 +179,42 @@
           <button id="btn-dz-save" class="bg-accent hover:bg-blue-500 text-white rounded-lg px-4 py-2 transition">Speichern</button>
         </div>
         <p id="dz-test-result" class="mt-3 text-gray-400"></p>
+
+        <section id="domoticz-diagnostics" class="mt-6 rounded-lg border border-white/10 bg-surface2 p-4" aria-live="polite">
+          <div class="flex items-center justify-between gap-3 flex-wrap">
+            <h3 class="font-semibold text-gray-100">Verbindungs- und Gerätediagnose</h3>
+            <button id="btn-dz-check-again" type="button" class="bg-accent hover:bg-blue-500 text-white rounded-lg px-3 py-1.5 transition">↻ Erneut prüfen</button>
+          </div>
+          <p id="dz-diagnostic-summary" class="mt-3 text-gray-200">Verbindungsprüfung steht noch aus.</p>
+          <p id="dz-diagnostic-error" class="hidden mt-2 text-red-300"></p>
+          <p id="dz-inventory-note" class="hidden mt-2 text-gray-400"></p>
+          <div class="grid sm:grid-cols-2 gap-3 mt-4 text-sm">
+            <p class="rounded bg-black/20 p-3">Fehlende aktive Geräte: <strong id="dz-missing-active-count">0</strong></p>
+            <p class="rounded bg-black/20 p-3">Fehlende inaktive Geräte: <strong id="dz-missing-inactive-count">0</strong></p>
+          </div>
+          <div class="grid lg:grid-cols-2 gap-4 mt-4">
+            <section>
+              <h4 class="font-medium text-yellow-200 mb-2">Aktive Geräte fehlen</h4>
+              <ul id="dz-missing-active-list" class="space-y-3 text-sm"></ul>
+            </section>
+            <section>
+              <h4 class="font-medium text-gray-300 mb-2">Inaktive Geräte fehlen (nur Information)</h4>
+              <ul id="dz-missing-inactive-list" class="space-y-3 text-sm"></ul>
+              <p id="dz-inactive-advice" class="hidden mt-2 text-green-300 text-sm">Wenn ein Gerät absichtlich deaktiviert wurde, ist keine Maßnahme erforderlich.</p>
+            </section>
+          </div>
+          <details class="mt-4 text-sm text-gray-300">
+            <summary class="cursor-pointer font-medium">Fehlende Geräte in Domoticz prüfen</summary>
+            <ol class="list-decimal ml-5 mt-2 space-y-1">
+              <li>In Domoticz <strong>Alle Geräte</strong> öffnen und nach dem IDX suchen.</li>
+              <li>Prüfen, ob das Gerät noch existiert und als <strong>Used</strong> markiert ist.</li>
+              <li>Prüfen, ob das konfigurierte Domoticz-Konto das Gerät über die API sehen darf.</li>
+              <li>Vor einer Änderung bedenken, dass das Gerät vorübergehend nicht verfügbar sein kann.</li>
+              <li>DomLink mit „Erneut prüfen“ aktualisieren.</li>
+            </ol>
+            <p class="mt-2">DomLink fragt Domoticz mit <code>used=true</code> ab. Ein fehlender Eintrag wird nicht automatisch als gelöscht behandelt; bestehende Matter-Endpunkte bleiben erhalten.</p>
+          </details>
+        </section>
       </div>
 
       <div class="bg-surface border border-white/10 rounded-xl p-5">
@@ -378,6 +415,11 @@
 
     document.getElementById('btn-dz-test').addEventListener('click', testDomoticz);
     document.getElementById('btn-dz-save').addEventListener('click', saveDomoticz);
+    document.getElementById('btn-domoticz-diagnostics').addEventListener('click', () => {
+      selectTab('settings');
+      requestAnimationFrame(() => document.getElementById('domoticz-diagnostics').scrollIntoView({ behavior: 'smooth', block: 'center' }));
+    });
+    document.getElementById('btn-dz-check-again').addEventListener('click', checkDomoticzAgain);
 
     document.getElementById('btn-matter-reset').addEventListener('click', resetMatterBridge);
 
@@ -476,8 +518,7 @@
   async function refreshStatus() {
     try {
       const status = await api('/api/status');
-      setDot('dot-domoticz', status.domoticz.online && !status.domoticz.lastError ? 'green' : 'red');
-      document.getElementById('dot-domoticz').title = status.domoticz.lastError || (status.domoticz.online ? 'Domoticz verbunden' : 'Domoticz nicht verfügbar');
+      renderDomoticzDiagnostics(status.domoticz);
       setDot('dot-matter', status.matter.commissioned ? 'green' : (status.matter.running ? 'red' : 'gray'));
       renderMatterStatusBrief(status.matter);
     } catch (e) { /* transient */ }
@@ -486,6 +527,109 @@
   function setDot(id, color) {
     const el = document.getElementById(id);
     el.className = 'status-dot ' + color;
+  }
+
+  function renderDomoticzDiagnostics(status) {
+    const dot = document.getElementById('dot-domoticz');
+    const openButton = document.getElementById('btn-domoticz-diagnostics');
+    const state = ['gray', 'red', 'yellow', 'green'].includes(status.state) ? status.state : 'gray';
+    const active = status.missingActiveDevices || [];
+    const inactive = status.missingInactiveDevices || [];
+    let summary;
+
+    if (state === 'gray') summary = 'Die erste Verbindungsprüfung zu Domoticz läuft noch.';
+    else if (state === 'red') summary = 'Die Verbindung zu Domoticz ist fehlgeschlagen. Die Geräteliste konnte nicht geprüft werden.';
+    else if (state === 'yellow') summary = 'Domoticz ist verbunden, aber einige aktive Geräte fehlen.';
+    else if (inactive.length) summary = 'Domoticz ist verbunden. Einige inaktive Geräte sind nicht mehr in der Geräteliste vorhanden. Keine Maßnahme erforderlich.';
+    else summary = 'Domoticz ist verbunden. Alle aktiven Geräte sind vorhanden.';
+
+    setDot('dot-domoticz', state);
+    dot.title = `${summary} Diagnose öffnen.`;
+    openButton.title = summary;
+    openButton.setAttribute('aria-label', `Domoticz Status: ${summary} Diagnose öffnen`);
+    document.getElementById('dz-diagnostic-summary').textContent = summary;
+    document.getElementById('dz-missing-active-count').textContent = String(status.missingActiveCount ?? active.length);
+    document.getElementById('dz-missing-inactive-count').textContent = String(status.missingInactiveCount ?? inactive.length);
+
+    const errorEl = document.getElementById('dz-diagnostic-error');
+    if (status.lastError) {
+      errorEl.textContent = `Letzter Verbindungsfehler: ${status.lastError}`;
+      errorEl.classList.remove('hidden');
+    } else {
+      errorEl.textContent = '';
+      errorEl.classList.add('hidden');
+    }
+
+    const note = document.getElementById('dz-inventory-note');
+    if (!status.inventoryValid && status.inventoryCheckedAt) {
+      note.textContent = `Die angezeigten Gerätelisten stammen von der letzten gültigen Inventur (${new Date(status.inventoryCheckedAt).toLocaleString('de-DE')}).`;
+      note.classList.remove('hidden');
+    } else if (!status.inventoryValid) {
+      note.textContent = 'Bis eine gültige Inventur eintrifft, können fehlende Geräte nicht beurteilt werden.';
+      note.classList.remove('hidden');
+    } else {
+      note.textContent = '';
+      note.classList.add('hidden');
+    }
+
+    renderMissingDeviceList('dz-missing-active-list', active, status.inventoryValid, true);
+    renderMissingDeviceList('dz-missing-inactive-list', inactive, status.inventoryValid, false);
+    document.getElementById('dz-inactive-advice').classList.toggle('hidden', inactive.length === 0);
+  }
+
+  function renderMissingDeviceList(listId, devicesToRender, inventoryValid, isActive) {
+    const list = document.getElementById(listId);
+    list.replaceChildren();
+    if (devicesToRender.length === 0) {
+      const item = document.createElement('li');
+      item.className = 'text-gray-500';
+      item.textContent = inventoryValid ? 'Keine fehlenden Geräte.' : 'Keine fehlenden Geräte aus einer gültigen Inventur bekannt.';
+      list.appendChild(item);
+      return;
+    }
+
+    for (const device of devicesToRender) {
+      const item = document.createElement('li');
+      item.className = 'rounded border border-white/10 bg-black/20 p-3';
+      const title = document.createElement('p');
+      title.className = isActive ? 'font-medium text-yellow-100' : 'font-medium text-gray-200';
+      title.textContent = `IDX ${device.idx} · ${device.name || 'Name nicht gespeichert'}`;
+      const details = document.createElement('p');
+      details.className = 'mt-1 text-gray-400';
+      details.textContent = `Alexa-Name: ${device.alexaName || '—'} · Typ: ${device.alexaType || '—'} · ${device.active ? 'Aktiv' : 'Inaktiv'} · Matter registriert: ${device.matterRegistered ? 'Ja' : 'Nein'}`;
+      const causes = document.createElement('ul');
+      causes.className = 'list-disc ml-5 mt-2 text-gray-500';
+      for (const cause of [
+        'Das Gerät existiert möglicherweise nicht mehr in Domoticz.',
+        'Das Gerät ist möglicherweise nicht als „Used“ markiert.',
+        'Das konfigurierte Domoticz-Konto darf das Gerät möglicherweise nicht über die API sehen.',
+        'Das Gerät ist möglicherweise vorübergehend nicht verfügbar.',
+      ]) {
+        const causeItem = document.createElement('li');
+        causeItem.textContent = cause;
+        causes.appendChild(causeItem);
+      }
+      item.append(title, details, causes);
+      list.appendChild(item);
+    }
+  }
+
+  async function checkDomoticzAgain() {
+    const button = document.getElementById('btn-dz-check-again');
+    button.disabled = true;
+    button.textContent = 'Prüfe…';
+    try {
+      const result = await api('/api/devices/refresh', { method: 'POST' });
+      await Promise.all([refreshStatus(), refreshDevices()]);
+      if (result.status?.domoticz?.state === 'red') toast('Domoticz ist nicht erreichbar. Details stehen in der Diagnose.', 'error');
+      else if (result.status?.domoticz?.state === 'yellow') toast('Domoticz ist verbunden, aber aktive Geräte fehlen.', 'error');
+      else toast('Domoticz-Prüfung abgeschlossen', 'success');
+    } catch (e) {
+      toast('Domoticz-Prüfung fehlgeschlagen: ' + e.message, 'error');
+    } finally {
+      button.disabled = false;
+      button.textContent = '↻ Erneut prüfen';
+    }
   }
 
   // ---------------- devices ----------------

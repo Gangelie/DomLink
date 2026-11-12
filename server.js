@@ -9,6 +9,8 @@ import DomoticzClient from './lib/domoticz.js';
 import DeviceStore from './lib/deviceStore.js';
 import MatterBridge from './lib/matterBridge.js';
 import { createMatterStarter } from './lib/matterStartup.js';
+import { createDomoticzRefreshHandler, createSingleFlightPoll } from './lib/domoticzApi.js';
+import { buildPublicStatus, createDomoticzStatus, recordDomoticzFailure, recordValidDomoticzInventory } from './lib/domoticzStatus.js';
 import { ALEXA_TYPES } from './lib/deviceTypes.js';
 import * as eventLog from './lib/eventLog.js';
 
@@ -24,20 +26,21 @@ const domoticz = new DomoticzClient(() => cfg.domoticz);
 const deviceStore = new DeviceStore({ cfg, persist, domoticz });
 const matter = new MatterBridge({ deviceStore, dataDir: configStore.DATA_DIR, logger: console });
 
-const domoticzState = { online: false, lastError: null, lastCheckedAt: null };
+const domoticzState = createDomoticzStatus();
 
-async function pollDomoticz() {
+const pollDomoticz = createSingleFlightPoll(async () => {
+  const checkedAt = Date.now();
   try {
     await deviceStore.refresh();
-    domoticzState.online = true;
-    domoticzState.lastError = deviceStore.lastInventoryError;
+    recordValidDomoticzInventory(domoticzState, {
+      missingActiveDevices: deviceStore.missingActiveDevices,
+      missingInactiveDevices: deviceStore.missingInactiveDevices,
+    }, checkedAt);
   } catch (err) {
     deviceStore.markUnavailable(err);
-    domoticzState.online = false;
-    domoticzState.lastError = err.message;
+    recordDomoticzFailure(domoticzState, deviceStore.lastInventoryError, checkedAt);
   }
-  domoticzState.lastCheckedAt = Date.now();
-}
+});
 
 const app = express();
 app.set('trust proxy', 1);
@@ -62,10 +65,7 @@ app.use('/api', requireAuth);
 // Status (top bar)
 // ---------------------------------------------------------------------
 app.get('/api/status', (req, res) => {
-  res.json({
-    domoticz: domoticzState,
-    matter: matter.getStatus(),
-  });
+  res.json(buildPublicStatus(domoticzState, matter.getStatus()));
 });
 
 // ---------------------------------------------------------------------
@@ -166,10 +166,7 @@ app.put('/api/devices/:idx', (req, res) => {
   }
 });
 
-app.post('/api/devices/refresh', async (req, res) => {
-  await pollDomoticz();
-  res.json({ ok: true, devices: deviceStore.list() });
-});
+app.post('/api/devices/refresh', createDomoticzRefreshHandler({ pollDomoticz, deviceStore, domoticzState, matter }));
 
 // ---------------------------------------------------------------------
 // Static SPA
