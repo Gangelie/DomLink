@@ -18,7 +18,7 @@ function harness(raw, { switchScene } = {}) {
   const endpointWrites = [];
   const endpoint = { set: async (patch) => endpointWrites.push(patch) };
 
-  return { bridge, commands, endpoint, endpointWrites, store };
+  return { bridge, commands, domoticz, endpoint, endpointWrites, store };
 }
 
 async function activate(h, idx) {
@@ -26,6 +26,8 @@ async function activate(h, idx) {
   h.store.updateDeviceConfig(idx, { active: true });
   const deviceId = `domlink-${idx}`;
   h.bridge.endpoints.set(deviceId, h.endpoint);
+  // Harness endpoints stand in for a live Matter server.
+  h.bridge.acceptCommands = true;
 
   // _handleOnOffCommand intentionally dispatches asynchronously. Capture
   // each task so tests can await the complete Domoticz + Matter state flow.
@@ -87,6 +89,84 @@ test('failed Matter Scene command resets Matter state and remains retryable', as
   assert.deepEqual(h.commands, [['43', 'On'], ['43', 'On']]);
   assert.equal(h.endpointWrites.length, 2);
   assert.ok(h.endpointWrites.every((patch) => patch.onOff.onOff === false));
+});
+
+test('offline Scene commands are blocked and the momentary Matter state stays Off', async () => {
+  const h = harness({ idx: '31', Name: 'Offline Scene', Type: 'Scene', Status: 'Off' });
+  const scene = await activate(h, '31');
+  h.domoticz.getDevices = async () => { throw new Error('offline'); };
+  await assert.rejects(h.store.refresh(), /offline/);
+  scene.issue(true);
+  await scene.settle();
+  assert.deepEqual(h.commands, []);
+  assert.deepEqual(h.endpointWrites.at(-1), { onOff: { onOff: false } });
+  assert.equal(h.bridge.endpoints.get(scene.deviceId), h.endpoint);
+});
+
+test('local endpoint sync events are source-filtered without dropping concurrent controller commands', async () => {
+  const domoticzCalls = [];
+  const store = new DeviceStore({ cfg: { devices: {
+    '51': { active: true, matterRegistered: true, alexaType: 'DIMMER', alexaName: 'Dimmer' },
+    '52': { active: true, matterRegistered: true, alexaType: 'THERMOSTAT', alexaName: 'Thermostat' },
+  } }, persist() {}, domoticz: {
+    getDevices: async () => [
+      { idx: '51', Name: 'Dimmer', Type: 'Light/Switch', SwitchType: 'Dimmer', Status: 'On', Level: 30 },
+      { idx: '52', Name: 'Thermostat', Type: 'Thermostat', Temp: '19', SetPoint: '21' },
+    ],
+    setLevel: async (...args) => domoticzCalls.push(['setlevel', ...args]),
+    setSetpoint: async (...args) => domoticzCalls.push(['setsetpoint', ...args]),
+  } });
+  await store.refresh();
+  const bridge = new MatterBridge({ deviceStore: store, dataDir: '/tmp/domlink-test', logger: { error() {}, log() {} } });
+  bridge.acceptCommands = true;
+
+  const makeEvent = () => {
+    const listeners = [];
+    return { on: (listener) => listeners.push(listener), emit: (...args) => listeners.forEach((listener) => listener(...args)) };
+  };
+  const levelChanged = makeEvent();
+  const setpointChanged = makeEvent();
+  const pendingSets = [];
+  const dimmerEndpoint = {
+    events: { levelControl: { currentLevel$Changed: levelChanged } },
+    set: (patch) => new Promise((resolve) => pendingSets.push(() => {
+      levelChanged.emit(patch.levelControl.currentLevel, 76, {}); // Local Matter synchronization.
+      resolve();
+    })),
+  };
+  const thermostatEndpoint = {
+    events: { thermostat: { occupiedHeatingSetpoint$Changed: setpointChanged } },
+    set: (patch) => new Promise((resolve) => pendingSets.push(() => {
+      setpointChanged.emit(patch.thermostat.occupiedHeatingSetpoint, 2100, {});
+      resolve();
+    })),
+  };
+  bridge.endpoints.set('domlink-51', dimmerEndpoint);
+  bridge.endpoints.set('domlink-52', thermostatEndpoint);
+  bridge._wireCommandEvents('domlink-51', 'DIMMABLE_LIGHT', dimmerEndpoint);
+  bridge._wireCommandEvents('domlink-52', 'THERMOSTAT', thermostatEndpoint);
+
+  const tasks = [];
+  const apply = bridge._applyCommand.bind(bridge);
+  bridge._applyCommand = (...args) => { const task = apply(...args); tasks.push(task); return task; };
+
+  // Two overlapping local updates on one endpoint and another endpoint must
+  // not mask remote controller writes arriving before those updates resolve.
+  const syncPromises = [
+    bridge._pushState(dimmerEndpoint, 'DIMMABLE_LIGHT', { powerState: 'ON', brightness: 30 }),
+    bridge._pushState(dimmerEndpoint, 'DIMMABLE_LIGHT', { powerState: 'ON', brightness: 35 }),
+    bridge._pushState(thermostatEndpoint, 'THERMOSTAT', { temperature: 19, targetTemperature: 21 }),
+  ];
+  levelChanged.emit(127, 76, { subject: { fabric: 1 } });
+  setpointChanged.emit(2250, 2100, { subject: { fabric: 1 } });
+  await Promise.all(tasks.splice(0));
+  pendingSets.reverse().forEach((finish) => finish());
+  await Promise.all(syncPromises);
+
+  assert.deepEqual(domoticzCalls, [
+    ['setlevel', '51', 50],
+    ['setsetpoint', '52', 22.5],
+  ]);
 });
 
 test('Matter Group sends On and Off and does not receive an automatic state reset', async () => {

@@ -25,6 +25,34 @@ Matter brightness is limited to 0-100%; larger Domoticz selectors are not
 completely representable. If `LevelNames` are missing, levels are snapped
 to 0,10,...,100 as a compatibility fallback.
 
+## Matter endpoint persistence during Domoticz outages
+
+The persisted `config.json` device map records each endpoint's Domoticz index,
+Matter registration flag, Alexa type, name, and active setting. DomLink hydrates
+all registered endpoints from this metadata before contacting Domoticz, keeping
+the Matter endpoint IDs and device types stable across cold starts. Therefore,
+an unavailable Domoticz server does not prevent Matter from restoring the
+previously registered topology.
+
+Startup and runtime polling reject malformed inventories. A valid partial
+response refreshes the devices it contains and marks omitted devices
+unreachable without removing their records or Matter endpoints. This lets
+available devices continue operating while an omitted registered device
+remains unavailable. DomLink retries on the normal poll interval. Sensor
+measurements become unavailable (`null`), and commands are not sent to an
+unavailable device. When an omitted device returns, its cached record refreshes
+and its existing Matter endpoint becomes reachable again.
+Because an omitted API row cannot distinguish a permanent deletion from an
+outage, a device that never returns remains registered and unreachable. It is
+not automatically removed based on Domoticz absence.
+
+Thermostat endpoint startup uses its persisted last-known finite SetPoint when
+available, or 20°C when no valid SetPoint has ever been observed. The
+thermostat starts unreachable during a Domoticz outage, and initialization or
+reconnection never writes that fallback to Domoticz.
+The dashboard remains available and reports Domoticz errors. No additional
+per-device polling is used.
+
 ## External thermostat temperature source
 
 Each thermostat can optionally select an `Isttemperatur-Quelle` in the device
