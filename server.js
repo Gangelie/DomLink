@@ -8,6 +8,7 @@ import { createAuthRouter, requireAuth } from './lib/auth.js';
 import DomoticzClient from './lib/domoticz.js';
 import DeviceStore from './lib/deviceStore.js';
 import MatterBridge from './lib/matterBridge.js';
+import { createMatterStarter } from './lib/matterStartup.js';
 import { ALEXA_TYPES } from './lib/deviceTypes.js';
 import * as eventLog from './lib/eventLog.js';
 
@@ -29,8 +30,9 @@ async function pollDomoticz() {
   try {
     await deviceStore.refresh();
     domoticzState.online = true;
-    domoticzState.lastError = null;
+    domoticzState.lastError = deviceStore.lastInventoryError;
   } catch (err) {
+    deviceStore.markUnavailable(err);
     domoticzState.online = false;
     domoticzState.lastError = err.message;
   }
@@ -180,14 +182,14 @@ app.get('*', (req, res) => {
 app.listen(PORT, async () => {
   console.log(`DomLink läuft auf Port ${PORT}`);
 
-  // Matter registers currently-active devices once at startup, so the
-  // deviceStore must be populated from a real Domoticz poll first - starting
-  // both in parallel is a race that silently drops whichever active devices
-  // haven't loaded yet.
+  // Keep the dashboard available during a Domoticz outage. The store hydrates
+  // saved endpoint identities first, so Matter can start with the full topology
+  // while the poll reconnects and refreshes whatever devices are available.
   await pollDomoticz();
-  setInterval(pollDomoticz, POLL_INTERVAL_MS);
-
-  matter.start().catch((err) => console.error('Matter: Start fehlgeschlagen:', err.message));
+  const startMatterWhenReady = createMatterStarter({ matter, deviceStore, logger: console });
+  deviceStore.on('availability-changed', (available) => { if (available) startMatterWhenReady(); });
+  setInterval(async () => { await pollDomoticz(); await startMatterWhenReady(); }, POLL_INTERVAL_MS);
+  await startMatterWhenReady();
 });
 
 process.on('SIGTERM', async () => {

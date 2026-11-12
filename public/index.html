@@ -476,7 +476,8 @@
   async function refreshStatus() {
     try {
       const status = await api('/api/status');
-      setDot('dot-domoticz', status.domoticz.online ? 'green' : 'red');
+      setDot('dot-domoticz', status.domoticz.online && !status.domoticz.lastError ? 'green' : 'red');
+      document.getElementById('dot-domoticz').title = status.domoticz.lastError || (status.domoticz.online ? 'Domoticz verbunden' : 'Domoticz nicht verfügbar');
       setDot('dot-matter', status.matter.commissioned ? 'green' : (status.matter.running ? 'red' : 'gray'));
       renderMatterStatusBrief(status.matter);
     } catch (e) { /* transient */ }
@@ -706,7 +707,11 @@
 
     if (!status.running) {
       dot.className = 'status-dot gray';
-      text.textContent = 'Bridge startet…';
+      text.textContent = status.initializationError
+        ? `Matter-Bridge konnte nicht starten: ${status.initializationError}`
+        : status.initializationPending
+          ? 'Warte auf rekonstruierbare registrierte Endpunkte'
+          : 'Bridge startet…';
     } else if (status.commissioned) {
       dot.className = 'status-dot green';
       text.textContent = 'Mit Alexa (Matter) gekoppelt';

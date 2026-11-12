@@ -8,6 +8,7 @@ import {
 } from '../lib/deviceTypes.js';
 import DeviceStore from '../lib/deviceStore.js';
 import DomoticzClient from '../lib/domoticz.js';
+import MatterBridge from '../lib/matterBridge.js';
 
 const LEVEL_NAMES = Buffer.from('Off|Auto|Kuehlen|Fan|Heizen', 'utf8').toString('base64');
 
@@ -159,6 +160,19 @@ test('thermostat source may be inactive, refreshOne propagates and unavailable r
   assert.equal(store.getByDeviceId('domlink-20').state.targetTemperature, 22);
 });
 
+test('thermostat never republishes a cached external measurement while its source is unavailable', async () => {
+  const thermostat = { idx: '20', Name: 'Heat', Type: 'Thermostat', Temp: '20', SetPoint: '22' };
+  const sensor = { idx: '8', Name: 'Remote', Type: 'Temp', Temp: '17' };
+  const store = new DeviceStore({ cfg: { devices: { '20': { active: true, matterRegistered: true, alexaType: 'THERMOSTAT' }, '8': { active: false } } }, persist() {}, domoticz: { getDevices: async () => [thermostat, sensor] } });
+  await store.refresh();
+  store.updateDeviceConfig('20', { temperatureSourceIdx: '8' });
+  store.markUnavailable(new Error('offline'));
+  const update = store.updateDeviceConfig('20', { alexaName: 'Heating' });
+  assert.equal(update.state.temperature, null);
+  assert.equal(update.state.targetTemperature, 22);
+  assert.deepEqual(update.temperatureSources, []);
+});
+
 test('missing or invalid SetPoint retains the non-null legacy fallback', () => {
   for (const setPoint of [undefined, 'invalid']) {
     const state = stateFromDomoticzDevice('THERMOSTAT', {
@@ -170,4 +184,128 @@ test('missing or invalid SetPoint retains the non-null legacy fallback', () => {
   assert.equal(stateFromDomoticzDevice('THERMOSTAT', {
     idx: '22', Name: 'Thermostat', Type: 'Thermostat', Temp: '0', SetPoint: '0',
   }).targetTemperature, 0);
+});
+
+test('offline and incomplete snapshots preserve every registered record and block commands', async () => {
+  const lamp = { idx: '1', Name: 'Lamp', Type: 'Light/Switch', SwitchType: 'On/Off', Status: 'On' };
+  const sensor = { idx: '2', Name: 'Temp', Type: 'Temp', Temp: '19' };
+  const cfg = { devices: { '1': { active: true, matterRegistered: true, alexaType: 'SWITCH', alexaName: 'Lamp' }, '2': { active: false, matterRegistered: true, alexaType: 'TEMPERATURE_SENSOR', alexaName: 'Temp' } } };
+  let fetched = [lamp, sensor];
+  let offline = false;
+  const commands = [];
+  const store = new DeviceStore({ cfg, persist() {}, domoticz: {
+    getDevices: async () => { if (offline) throw new Error('timeout'); return fetched; },
+    switchLight: async (...args) => commands.push(args),
+  } });
+  await store.refresh();
+  assert.equal(store.canRestoreRegisteredEndpoints(), true);
+  const identities = store.getRegisteredDevices().map(({ deviceId, template }) => [deviceId, template]);
+  fetched = [lamp]; // Partial response updates present devices without deleting absent endpoints.
+  await store.refresh();
+  assert.deepEqual(store.getRegisteredDevices().map(({ deviceId, template }) => [deviceId, template]), identities);
+  assert.equal(store.getByDeviceId('domlink-2').available, false);
+  assert.equal(store.getByDeviceId('domlink-2').state.temperature, null);
+  assert.equal(store.getByDeviceId('domlink-1').available, true);
+  await store.applyStateChange('domlink-1', { powerState: 'ON' });
+  assert.deepEqual(commands, [['1', 'On']]);
+  offline = true;
+  await assert.rejects(store.refresh(), /timeout/);
+  assert.equal(store.getRegisteredDevices().length, 2);
+  assert.deepEqual(commands, [['1', 'On']]);
+  fetched = [sensor, lamp];
+  offline = false;
+  await store.refresh();
+  assert.equal(store.canRestoreRegisteredEndpoints(), true);
+  assert.equal(store.getByDeviceId('domlink-2').available, true);
+  assert.equal(store.getByDeviceId('domlink-2').state.temperature, 19);
+});
+
+test('restart restores persisted registered topology offline and reconciles after recovery', async () => {
+  const cfg = { devices: {
+    '11': { active: false, matterRegistered: true, alexaType: 'SWITCH', alexaName: 'Old endpoint' },
+    '12': { active: true, matterRegistered: true, alexaType: 'THERMOSTAT', alexaName: 'Heat' },
+    '13': { active: true, matterRegistered: true, alexaType: 'SELECTOR', alexaName: 'Mode' },
+  } };
+  let fetched = [];
+  const store = new DeviceStore({ cfg, persist() {}, domoticz: { getDevices: async () => fetched } });
+  assert.equal(store.canRestoreRegisteredEndpoints(), true);
+  assert.deepEqual(store.getRegisteredDevices().map(({ deviceId, template }) => [deviceId, template]), [
+    ['domlink-11', 'ONOFF_PLUG'], ['domlink-12', 'THERMOSTAT'], ['domlink-13', 'DIMMABLE_LIGHT'],
+  ]);
+  assert.equal(store.getByDeviceId('domlink-12').state.temperature, null);
+  await store.refresh();
+  assert.equal(store.getByDeviceId('domlink-11').available, false);
+  assert.equal(store.canRestoreRegisteredEndpoints(), true); // Persisted topology is independently reconstructible.
+  fetched = [
+    { idx: '11', Name: 'Old endpoint', Type: 'Group', Status: 'Mixed' },
+    { idx: '12', Name: 'Heat', Type: 'Thermostat', Temp: '18', SetPoint: '20' },
+    { idx: '13', Name: 'Mode', Type: 'Light/Switch', SwitchType: 'Selector', Status: 'Fan', LevelInt: '30', LevelNames: LEVEL_NAMES },
+  ];
+  await store.refresh();
+  assert.equal(store.canRestoreRegisteredEndpoints(), true);
+  assert.equal(store.getRegisteredDevices()[0].active, false);
+  assert.equal(store.getRegisteredDevices()[0].template, 'ONOFF_PLUG');
+  assert.equal(store.getByDeviceId('domlink-12').state.temperature, 18);
+  assert.equal(cfg.devices['12'].lastKnownSetPoint, 20);
+});
+
+test('offline thermostat restores a safe persisted setpoint or 20 C fallback', () => {
+  for (const [saved, expected] of [[undefined, 20], ['21.5', 21.5], ['invalid', 20], ['0', 20], ['50', 20]]) {
+    const thermostat = { active: true, matterRegistered: true, alexaType: 'THERMOSTAT', alexaName: 'Heat' };
+    if (saved !== undefined) thermostat.lastKnownSetPoint = saved;
+    const store = new DeviceStore({ cfg: { devices: { '20': thermostat } }, persist() {}, domoticz: { getDevices: async () => { throw new Error('offline'); } } });
+    const record = store.getByDeviceId('domlink-20');
+    assert.equal(record.state.temperature, null);
+    assert.equal(record.state.targetTemperature, expected);
+    assert.equal(record.available, false);
+    assert.equal(store.updateDeviceConfig('20', { alexaName: 'Updated while offline' }).state.targetTemperature, expected);
+  }
+});
+
+test('invalid live thermostat SetPoint retains a safe saved value or 20 C fallback', async () => {
+  for (const [saved, expected] of [['23', 23], [undefined, 20]]) {
+    const deviceConfig = { active: true, matterRegistered: true, alexaType: 'THERMOSTAT' };
+    if (saved !== undefined) deviceConfig.lastKnownSetPoint = saved;
+    const cfg = { devices: { '20': deviceConfig } };
+    const store = new DeviceStore({ cfg, persist() {}, domoticz: { getDevices: async () => [{ idx: '20', Name: 'Heat', Type: 'Thermostat', Temp: '19', SetPoint: '0' }] } });
+    await store.refresh();
+    assert.equal(store.getByDeviceId('domlink-20').state.targetTemperature, expected);
+    assert.equal(cfg.devices['20'].lastKnownSetPoint, saved);
+  }
+});
+
+test('successful thermostat command persists the finite SetPoint for offline restoration', async () => {
+  const cfg = { devices: { '20': { active: true, matterRegistered: true, alexaType: 'THERMOSTAT' } } };
+  const commands = [];
+  const store = new DeviceStore({ cfg, persist() {}, domoticz: {
+    getDevices: async () => [{ idx: '20', Name: 'Heat', Type: 'Thermostat', Temp: '19', SetPoint: '21' }],
+    setSetpoint: async (...args) => commands.push(args),
+  } });
+  await store.refresh();
+  await store.applyStateChange('domlink-20', { targetTemperature: 22.5 });
+  assert.deepEqual(commands, [['20', 22.5]]);
+  assert.equal(cfg.devices['20'].lastKnownSetPoint, 22.5);
+});
+
+test('registered device metadata with an unsupported Alexa type blocks Matter restoration', () => {
+  const store = new DeviceStore({ cfg: { devices: { '9': { matterRegistered: true, active: false, alexaType: 'NOT_A_MATTER_TYPE' } } }, persist() {}, domoticz: { getDevices: async () => [] } });
+  assert.equal(store.canRestoreRegisteredEndpoints(), false);
+});
+
+test('Matter startup refuses to publish when registered endpoint metadata is unsupported', async () => {
+  const store = new DeviceStore({ cfg: { devices: { '9': { matterRegistered: true, active: false, alexaType: 'METER' } } }, persist() {}, domoticz: { getDevices: async () => [] } });
+  const bridge = new MatterBridge({ deviceStore: store, dataDir: '/tmp/domlink-test-invalid-config', logger: { log() {}, error() {} } });
+  await assert.rejects(bridge.start(), /nicht unterstützte Matter-Typen/);
+  assert.equal(bridge.server, null);
+  assert.equal(bridge.endpoints.size, 0);
+});
+
+test('Domoticz malformed and empty API responses are not accepted as inventories', async () => {
+  const client = new DomoticzClient(() => ({ url: 'http://localhost', port: '8080' }));
+  for (const response of [undefined, {}, { result: null }, { result: [null] }, { result: [{}] }]) {
+    client._get = async () => response;
+    await assert.rejects(client.getDevices(), /Ungültig/);
+  }
+  client._get = async () => ({ result: [] });
+  assert.deepEqual(await client.getDevices(), []); // DeviceStore checks persisted endpoint coverage.
 });
