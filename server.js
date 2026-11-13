@@ -28,6 +28,11 @@ const matter = new MatterBridge({ deviceStore, dataDir: configStore.DATA_DIR, lo
 
 const domoticzState = createDomoticzStatus();
 
+deviceStore.on('diagnostics-changed', (diagnostics) => {
+  if (!domoticzState.inventoryValid) return;
+  recordValidDomoticzInventory(domoticzState, diagnostics, domoticzState.inventoryCheckedAt ?? Date.now());
+});
+
 const pollDomoticz = createSingleFlightPoll(async () => {
   const checkedAt = Date.now();
   try {

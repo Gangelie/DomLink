@@ -72,6 +72,59 @@ test('HTTP retirement route enforces session auth, confirmation, dispatch, and s
   assert.doesNotMatch(body, /SECRET|PAIRING|private token/);
 });
 
+test('orphan removal route requires authentication and exact IDX confirmation', async (t) => {
+  const calls = [];
+  let failPersist = false;
+  const deviceStore = {
+    list: () => [{ idx: '324', deviceId: 'domlink-324', retirement: null }],
+    updateDeviceConfig() {},
+  };
+  const matter = {
+    endpoints: new Map(),
+    async removeOrphanedDevice(idx, confirmIdx) {
+      calls.push([idx, confirmIdx]);
+      if (failPersist) throw Object.assign(new Error('private path /data/config.json secret=opaque'), { statusCode: 500 });
+      if (idx !== '324' || confirmIdx !== '324') throw Object.assign(new Error('Bestätigung stimmt nicht mit dem IDX überein.'), { statusCode: 400 });
+      return { ok: true, removedIdx: idx };
+    },
+  };
+  const app = express();
+  app.use(express.json());
+  app.use(session({ secret: 'test-session-secret', resave: false, saveUninitialized: false }));
+  const authConfig = { passwordHash: bcrypt.hashSync('test-password', 4), mustChangePassword: false };
+  app.use('/api/auth', createAuthRouter(authConfig, () => {}));
+  app.use('/api', requireAuth);
+  app.use('/api', createDeviceApiRouter({ deviceStore, matter }));
+  const server = await new Promise((resolve) => {
+    const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const endpoint = `${base}/api/devices/324/remove-orphan`;
+  const unauthenticated = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmIdx: '324' }) });
+  assert.equal(unauthenticated.status, 401);
+  assert.deepEqual(calls, []);
+  const login = await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'test-password' }),
+  });
+  const cookie = login.headers.get('set-cookie').split(';', 1)[0];
+  const post = (body) => fetch(endpoint, { method: 'POST', headers: { cookie, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const invalid = await post({ confirmIdx: '323' });
+  assert.equal(invalid.status, 400);
+  const invalidShape = await post({ confirmIdx: '324', other: 'unexpected' });
+  assert.equal(invalidShape.status, 400);
+  const success = await post({ confirmIdx: '324' });
+  assert.equal(success.status, 200);
+  assert.deepEqual(await success.json(), { ok: true, removedIdx: '324' });
+  assert.deepEqual(calls, [['324', '323'], ['324', '324']]);
+  failPersist = true;
+  const failed = await post({ confirmIdx: '324' });
+  assert.equal(failed.status, 500);
+  const failureBody = await failed.text();
+  assert.match(failureBody, /Entfernung fehlgeschlagen/);
+  assert.doesNotMatch(failureBody, /config\.json|opaque|private path/);
+});
+
 test('authenticated POST /api/devices/refresh polls and reports status for presence, absence, outage and recovery', async (t) => {
   const configs = {
     '1': { active: true, matterRegistered: true, alexaName: 'Lampe', alexaType: 'SWITCH' },

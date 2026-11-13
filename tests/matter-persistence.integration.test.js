@@ -5,9 +5,13 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import express from 'express';
 import { Environment } from '@matter/main';
+import { ServerNodeStore } from '../node_modules/@matter/node/dist/esm/storage/server/ServerNodeStore.js';
 import DeviceStore from '../lib/deviceStore.js';
 import MatterBridge from '../lib/matterBridge.js';
+import { createDeviceApiRouter } from '../lib/deviceApi.js';
+import { createDomoticzStatus, recordValidDomoticzInventory } from '../lib/domoticzStatus.js';
 
 async function unusedPort() {
   const probe = net.createServer();
@@ -507,6 +511,197 @@ test('startup fails closed when a tombstone has a missing or conflicting SDK end
     else process.env.MATTER_PORT = previousPort;
     if (previousMdnsInterface !== undefined) Environment.default.vars.set('mdns.networkInterface', previousMdnsInterface);
     if (previousLogLevel !== undefined) Environment.default.vars.set('log.level', previousLogLevel);
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('orphan cleanup removes only a confirmed never-registered entry and preserves Matter identities', { timeout: 60000 }, async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'domlink-orphan-cleanup-'));
+  const configPath = path.join(tempDir, 'config.json');
+  const previousPort = process.env.MATTER_PORT;
+  const previousMdnsInterface = Environment.default.vars.get('mdns.networkInterface');
+  const previousLogLevel = Environment.default.vars.get('log.level');
+  process.env.MATTER_PORT = String(await unusedPort());
+  Environment.default.vars.set('mdns.networkInterface', 'lo');
+  Environment.default.vars.set('log.level', 'error');
+
+  let inventory = ['321', '322', '324', '326', '330'];
+  let cfg = {
+    matterRetirements: {},
+    devices: {
+      '321': { active: true, matterRegistered: true, alexaType: 'SWITCH', alexaName: 'Unrelated one', domoticzName: 'Unrelated one' },
+      '322': { active: true, matterRegistered: true, alexaType: 'SWITCH', alexaName: 'Unrelated two', domoticzName: 'Unrelated two' },
+      '323': { active: true, matterRegistered: true, alexaType: 'SWITCH', alexaName: 'Retired', domoticzName: 'Retired' },
+      '325': { active: false, matterRegistered: false, alexaType: 'SWITCH', alexaName: 'Referenced', domoticzName: 'Referenced' },
+      '326': { active: false, matterRegistered: false, alexaType: 'SWITCH', alexaName: 'Still present', domoticzName: 'Still present' },
+      '327': { active: true, matterRegistered: false, alexaType: 'SWITCH', alexaName: 'Unexpected active', domoticzName: 'Unexpected active' },
+      '330': { active: true, matterRegistered: true, alexaType: 'SWITCH', alexaName: 'Retained identity', domoticzName: 'Retained identity' },
+    },
+  };
+  cfg.devices['322'].temperatureSourceIdx = '325';
+  writeConfigAtomically(configPath, cfg);
+  let failNextPersist = false;
+  const persist = () => {
+    if (failNextPersist) {
+      failNextPersist = false;
+      throw new Error('simulated config persistence failure');
+    }
+    writeConfigAtomically(configPath, cfg);
+  };
+  const calls = [];
+  const domoticz = {
+    getDevices: async () => inventory.map((idx) => ({ idx, Name: cfg.devices[idx]?.domoticzName || `Device ${idx}`, Type: 'Light/Switch', SwitchType: 'On/Off', Status: 'Off' })),
+    switchLight: async (...args) => calls.push(['switchlight', ...args]),
+    switchScene: async (...args) => calls.push(['switchscene', ...args]),
+    setLevel: async (...args) => calls.push(['setlevel', ...args]),
+    setSetpoint: async (...args) => calls.push(['setsetpoint', ...args]),
+  };
+  let store;
+  let bridge;
+  let apiServer;
+  try {
+    store = new DeviceStore({ cfg, persist, domoticz });
+    await store.refresh();
+    assert.equal(cfg.devices['324'].active, false, 'normal inventory discovery creates the unactivated config entry');
+    assert.notEqual(cfg.devices['324'].matterRegistered, true, 'inventory discovery must not register Matter');
+    assert.equal(store.records.get('324').matterRegistered, false);
+    bridge = new MatterBridge({ deviceStore: store, dataDir: path.join(tempDir, 'matter-app-data'), logger: { log() {}, error() {} } });
+    await bridge.start();
+
+    // This is the reported lifecycle: IDX 324 disappears after discovery,
+    // with no activation or explicit settings change in between.
+    inventory = inventory.filter((idx) => idx !== '324');
+    await store.refresh();
+    assert.equal(store.records.get('324').available, false);
+    assert.equal(bridge.getOrphanRemovalStatus('324').canRemove, true);
+
+    const domoticzState = createDomoticzStatus();
+    const updateStatus = (diagnostics) => recordValidDomoticzInventory(domoticzState, diagnostics, domoticzState.inventoryCheckedAt ?? Date.now());
+    updateStatus({ missingActiveDevices: store.missingActiveDevices, missingInactiveDevices: store.missingInactiveDevices });
+    store.on('diagnostics-changed', updateStatus);
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api', createDeviceApiRouter({ deviceStore: store, matter: bridge }));
+    apiServer = await new Promise((resolve) => {
+      const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
+    });
+    const apiBase = `http://127.0.0.1:${apiServer.address().port}/api`;
+    const devicesResponse = await fetch(`${apiBase}/devices`);
+    const orphanApiRecord = (await devicesResponse.json()).devices.find((device) => device.idx === '324');
+    assert.equal(orphanApiRecord.orphanRemoval.canRemove, true, 'device API must expose the action eligibility to the UI');
+
+    const unrelatedNumbers = new Map(['321', '322'].map((idx) => [idx, bridge.endpoints.get(`domlink-${idx}`).number]));
+    await bridge.retireDevice('323', '323');
+    assert.equal(bridge.getOrphanRemovalStatus('323').canRemove, false, 'retired IDX 323 must not be offered for orphan cleanup');
+    await assert.rejects(bridge.removeOrphanedDevice('323', '323'), /Ruhestellungsdatensatz/);
+
+    assert.equal(bridge.getOrphanRemovalStatus('324').canRemove, true);
+    assert.equal(bridge.getOrphanRemovalStatus('326').canRemove, false, 'present inventory entries cannot be removed');
+    assert.equal(bridge.getOrphanRemovalStatus('325').canRemove, false, 'a configured reference blocks cleanup');
+    assert.match(bridge.getOrphanRemovalStatus('325').reason, /verweisen/);
+    assert.equal(bridge.getOrphanRemovalStatus('327').canRemove, false, 'active but never-registered config is inconsistent');
+    assert.equal(bridge.getOrphanRemovalStatus('321').canRemove, false, 'registered endpoint is not an orphan');
+
+    inventory = inventory.filter((idx) => idx !== '322');
+    await store.refresh();
+    assert.equal(bridge.getOrphanRemovalStatus('322').canRemove, false, 'missing registered Matter endpoints cannot be removed as orphans');
+    assert.match(bridge.getOrphanRemovalStatus('322').reason, /bei Matter registriert/);
+    await assert.rejects(bridge.removeOrphanedDevice('322', '322'), /bei Matter registriert/);
+    inventory.push('322');
+    await store.refresh();
+
+    const registered321 = { ...cfg.devices['321'] };
+    cfg.devices['321'].active = false;
+    cfg.devices['321'].matterRegistered = false;
+    store.records.get('321').active = false;
+    store.records.get('321').matterRegistered = false;
+    inventory = inventory.filter((idx) => idx !== '321');
+    await store.refresh();
+    assert.equal(bridge.getOrphanRemovalStatus('321').canRemove, false, 'an active Matter endpoint identity blocks cleanup even if config is inconsistent');
+    assert.match(bridge.getOrphanRemovalStatus('321').reason, /noch aktiv/);
+    await assert.rejects(bridge.removeOrphanedDevice('321', '321'), /noch aktiv/);
+    Object.assign(cfg.devices['321'], registered321);
+    store.records.get('321').active = true;
+    store.records.get('321').matterRegistered = true;
+    inventory.push('321');
+    await store.refresh();
+
+    store.markUnavailable(new Error('simulated Domoticz outage'));
+    assert.equal(bridge.getOrphanRemovalStatus('324').canRemove, false, 'a stale snapshot is not a current valid inventory');
+    await assert.rejects(bridge.removeOrphanedDevice('324', '324'), /gültige aktuelle Domoticz-Inventur/);
+    await store.refresh();
+
+    // Create a retained SDK identity for an otherwise orphan-shaped config.
+    const retainedEndpoint = bridge.endpoints.get('domlink-330');
+    await retainedEndpoint.close();
+    bridge.endpoints.delete('domlink-330');
+    cfg.devices['330'].active = false;
+    cfg.devices['330'].matterRegistered = false;
+    store.records.get('330').active = false;
+    store.records.get('330').matterRegistered = false;
+    persist();
+    inventory = inventory.filter((idx) => idx !== '330');
+    await store.refresh();
+    updateStatus({ missingActiveDevices: store.missingActiveDevices, missingInactiveDevices: store.missingInactiveDevices });
+    const retainedStatus = bridge.getOrphanRemovalStatus('330');
+    assert.equal(retainedStatus.canRemove, false);
+    assert.match(retainedStatus.reason, /Matter-Speicher/);
+    await assert.rejects(bridge.removeOrphanedDevice('330', '330'), /Matter-Speicher/);
+
+    const beforeConfig = structuredClone(cfg);
+    const orphanRecord = store.records.get('324');
+    const matterIdentitySnapshot = () => {
+      const aggregatorStore = bridge.server.env.get(ServerNodeStore).endpointStores.storeForEndpoint(bridge.aggregator);
+      const identities = [];
+      aggregatorStore.visit((saved) => identities.push([saved.id, saved.number]));
+      return identities.sort(([a], [b]) => a.localeCompare(b));
+    };
+    const identitiesBeforeFailure = matterIdentitySnapshot();
+    const endpointNumbersBeforeFailure = new Map(Array.from(bridge.endpoints, ([id, endpoint]) => [id, endpoint.number]));
+    failNextPersist = true;
+    const failedRemoval = await fetch(`${apiBase}/devices/324/remove-orphan`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmIdx: '324' }),
+    });
+    assert.equal(failedRemoval.status, 500, 'the API must report configuration persistence failure');
+    assert.match((await failedRemoval.text()), /Entfernung fehlgeschlagen/);
+    assert.deepEqual(cfg, beforeConfig, 'failed persistence restores the original config entry');
+    assert.strictEqual(store.records.get('324'), orphanRecord, 'failed persistence restores the original in-memory record');
+    assert.deepEqual(new Map(Array.from(bridge.endpoints, ([id, endpoint]) => [id, endpoint.number])), endpointNumbersBeforeFailure);
+    assert.deepEqual(matterIdentitySnapshot(), identitiesBeforeFailure, 'failed persistence must not change Matter storage');
+    assert.ok(store.missingInactiveDevices.some((device) => device.idx === '324'), 'failed persistence leaves diagnostics unchanged');
+
+    const resultResponse = await fetch(`${apiBase}/devices/324/remove-orphan`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmIdx: '324' }),
+    });
+    assert.equal(resultResponse.status, 200);
+    const result = await resultResponse.json();
+    assert.deepEqual(result, { ok: true, removedIdx: '324' });
+    const expectedConfig = structuredClone(beforeConfig);
+    delete expectedConfig.devices['324'];
+    assert.deepEqual(cfg, expectedConfig, 'only the orphan configuration key is removed');
+    assert.equal(store.records.has('324'), false);
+    assert.deepEqual(new Map(['321', '322'].map((idx) => [idx, bridge.endpoints.get(`domlink-${idx}`).number])), unrelatedNumbers);
+    assert.equal(bridge.endpoints.has('domlink-324'), false);
+    assert.equal(bridge.getOrphanRemovalStatus('324').canRemove, false);
+    assert.equal(store.missingInactiveDevices.some((device) => device.idx === '324'), false, 'diagnostics are updated immediately after removal');
+    assert.ok(store.missingInactiveDevices.some((device) => device.idx === '325'), 'other missing-device diagnostics remain');
+    assert.ok(store.missingInactiveDevices.some((device) => device.idx === '330'), 'unrelated retained diagnostics remain');
+    assert.equal(domoticzState.missingInactiveDevices.some((device) => device.idx === '324'), false, 'displayed status data updates without another poll');
+    assert.ok(domoticzState.missingInactiveDevices.some((device) => device.idx === '325'));
+    assert.deepEqual(calls, [], 'orphan cleanup must not issue Domoticz control commands');
+
+    const diskConfig = await readConfig(configPath);
+    assert.deepEqual(diskConfig, expectedConfig, 'the isolated config file contains only the intended removal');
+  } finally {
+    if (apiServer) await new Promise((resolve) => apiServer.close(resolve));
+    await bridge?.stop();
+    if (previousPort === undefined) delete process.env.MATTER_PORT;
+    else process.env.MATTER_PORT = previousPort;
+    if (previousMdnsInterface === undefined) Environment.default.vars.set('mdns.networkInterface', undefined);
+    else Environment.default.vars.set('mdns.networkInterface', previousMdnsInterface);
+    if (previousLogLevel === undefined) Environment.default.vars.set('log.level', undefined);
+    else Environment.default.vars.set('log.level', previousLogLevel);
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });

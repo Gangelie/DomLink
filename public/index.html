@@ -598,6 +598,17 @@
       const details = document.createElement('p');
       details.className = 'mt-1 text-gray-400';
       details.textContent = `Alexa-Name: ${device.alexaName || '—'} · Typ: ${device.alexaType || '—'} · ${device.active ? 'Aktiv' : 'Inaktiv'} · Matter registriert: ${device.matterRegistered ? 'Ja' : 'Nein'}`;
+      const explanation = document.createElement('p');
+      explanation.className = 'mt-2 text-gray-300';
+      if (device.retirementState) {
+        explanation.textContent = `Matter-Ruhestellung (${device.retirementState}) läuft oder benötigt Prüfung. Dieser Eintrag ist kein verwaistes, nie registriertes Gerät.`;
+      } else if (device.matterRegistered) {
+        explanation.textContent = device.active
+          ? 'Aktives Matter-Gerät fehlt in der aktuellen Domoticz-Inventur. Der Matter-Endpunkt bleibt erhalten; DomLink meldet eine Warnung.'
+          : 'Inaktives, weiterhin registriertes Matter-Gerät fehlt in der Inventur. Der Matter-Endpunkt bleibt erhalten; dies ist ein Hinweis ohne Warnung.';
+      } else {
+        explanation.textContent = 'Nie bei Matter registrierter DomLink-Eintrag fehlt in Domoticz. Er wird als verwaist angezeigt; eine Entfernung ist nur nach Sicherheitsprüfung möglich.';
+      }
       const causes = document.createElement('ul');
       causes.className = 'list-disc ml-5 mt-2 text-gray-500';
       for (const cause of [
@@ -610,7 +621,7 @@
         causeItem.textContent = cause;
         causes.appendChild(causeItem);
       }
-      item.append(title, details, causes);
+      item.append(title, details, explanation, causes);
       list.appendChild(item);
     }
   }
@@ -692,7 +703,12 @@
 
       const tdStatus = document.createElement('td');
       tdStatus.className = 'px-4 py-3 text-gray-400';
-      tdStatus.textContent = stateSummary(d);
+      if (d.retirement?.state === 'completed') tdStatus.textContent = 'Aus Matter entfernt';
+      else if (d.retired) tdStatus.textContent = 'Matter-Wiederherstellung erforderlich';
+      else if (d.orphaned) tdStatus.textContent = 'Verwaister DomLink-Eintrag · nie bei Matter registriert';
+      else if (d.domoticzPresent === false && d.matterRegistered) tdStatus.textContent = `Fehlt in Domoticz · Matter-Endpunkt bleibt erhalten (${d.active ? 'aktiv' : 'inaktiv'})`;
+      else if (d.domoticzPresent === false && d.active) tdStatus.textContent = 'Fehlt in Domoticz · als aktiv gespeichert, aber nicht bei Matter registriert';
+      else tdStatus.textContent = stateSummary(d);
 
       const tdAlexaName = document.createElement('td');
       tdAlexaName.className = 'px-4 py-3';
@@ -779,7 +795,20 @@
         retireButton.className = 'rounded-lg border border-red-500/40 px-3 py-1.5 text-red-200 hover:bg-red-900/30';
         retireButton.addEventListener('click', () => confirmRetirement(d));
         tdMatterAction.appendChild(retireButton);
-      } else tdMatterAction.textContent = '–';
+      } else if (d.orphaned) {
+        if (d.orphanRemoval?.canRemove) {
+          const removeButton = document.createElement('button');
+          removeButton.type = 'button';
+          removeButton.textContent = 'Aus DomLink-Liste entfernen';
+          removeButton.className = 'rounded-lg border border-amber-500/40 px-3 py-1.5 text-amber-100 hover:bg-amber-900/30';
+          removeButton.addEventListener('click', () => confirmOrphanRemoval(d));
+          tdMatterAction.appendChild(removeButton);
+        } else {
+          tdMatterAction.textContent = d.orphanRemoval?.reason || 'Verwaister Eintrag; Sicherheitsprüfung nicht möglich.';
+          tdMatterAction.title = tdMatterAction.textContent;
+          tdMatterAction.className += ' text-amber-200';
+        }
+      } else tdMatterAction.textContent = d.orphanRemoval?.reason && d.domoticzPresent === false ? d.orphanRemoval.reason : '–';
 
       if (d.retired) {
         tdActive.querySelector('input')?.setAttribute('disabled', 'disabled');
@@ -830,6 +859,47 @@
       }
     });
     buttons.append(cancel, submit); panel.append(title, details, warning, checkLabel, input, buttons); overlay.appendChild(panel); document.body.appendChild(overlay); input.focus();
+  }
+
+  async function confirmOrphanRemoval(device) {
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4';
+    const panel = document.createElement('div');
+    panel.className = 'w-full max-w-lg rounded-xl border border-white/10 bg-surface p-5 space-y-4';
+    const title = document.createElement('h2');
+    title.className = 'text-lg font-semibold';
+    title.textContent = 'Aus DomLink-Liste entfernen';
+    const details = document.createElement('p');
+    details.className = 'text-sm text-gray-300 whitespace-pre-line';
+    details.textContent = `Domoticz: ${device.domoticzName}\nIDX: ${device.idx}\nAlexa-Name: ${device.alexaName || '—'}`;
+    const explanation = document.createElement('p');
+    explanation.className = 'text-sm text-amber-100 whitespace-pre-line';
+    explanation.textContent = 'Dieser Eintrag fehlt in der gültigen Domoticz-Inventur und war nie bei Matter registriert. Nur der gespeicherte DomLink-Konfigurationseintrag wird entfernt. Matter-Speicher, Matter-Geräte und andere DomLink-Einstellungen bleiben unberührt.';
+    const checkLabel = document.createElement('label');
+    checkLabel.className = 'flex gap-2 text-sm';
+    const checkbox = document.createElement('input'); checkbox.type = 'checkbox';
+    checkLabel.append(checkbox, document.createTextNode('Ich bestätige, dass dieser verwaiste Eintrag entfernt werden soll.'));
+    const input = document.createElement('input'); input.className = 'w-full rounded-lg px-3 py-2'; input.placeholder = `Domoticz-IDX exakt eingeben: ${device.idx}`;
+    const buttons = document.createElement('div'); buttons.className = 'flex justify-end gap-2';
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Abbrechen'; cancel.className = 'rounded-lg px-3 py-2 bg-white/10';
+    const submit = document.createElement('button'); submit.type = 'button'; submit.textContent = 'Eintrag entfernen'; submit.disabled = true; submit.className = 'rounded-lg px-3 py-2 bg-amber-800 disabled:opacity-40';
+    const update = () => { submit.disabled = !(checkbox.checked && input.value === String(device.idx)); };
+    checkbox.addEventListener('change', update); input.addEventListener('input', update);
+    cancel.addEventListener('click', () => overlay.remove());
+    submit.addEventListener('click', async () => {
+      submit.disabled = true; submit.textContent = 'Entfernung läuft…'; cancel.disabled = true;
+      try {
+        await api(`/api/devices/${encodeURIComponent(device.idx)}/remove-orphan`, { method: 'POST', body: { confirmIdx: input.value } });
+        overlay.remove();
+        toast('Verwaister Eintrag aus der DomLink-Liste entfernt.', 'success');
+        await Promise.all([refreshDevices(), refreshStatus()]);
+      } catch (error) {
+        submit.textContent = 'Erneut versuchen';
+        toast(error.message, 'error');
+        cancel.disabled = false; update();
+      }
+    });
+    buttons.append(cancel, submit); panel.append(title, details, explanation, checkLabel, input, buttons); overlay.appendChild(panel); document.body.appendChild(overlay); input.focus();
   }
 
   async function updateDevice(idx, patch) {
