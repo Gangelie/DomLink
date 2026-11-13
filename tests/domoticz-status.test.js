@@ -54,6 +54,21 @@ test('a missing active configured device makes a valid connection YELLOW', () =>
   });
 });
 
+test('a missing active permanently retired device does not warn, while inactive registered devices stay informational', () => {
+  const devices = {
+    '1': { ...configured['1'], active: true, matterRegistered: false },
+    '5': { ...configured['5'], active: false, matterRegistered: true },
+  };
+  const retirements = { '1': { idx: '1', state: 'completed', matterEndpointId: 'd1', endpointNumber: 2 } };
+  const diagnostics = buildMissingDeviceDiagnostics(devices, new Set(), retirements);
+  const status = createDomoticzStatus();
+  recordValidDomoticzInventory(status, diagnostics, 301);
+  assert.equal(status.state, 'green');
+  assert.equal(status.missingActiveCount, 0);
+  assert.equal(status.missingInactiveCount, 1);
+  assert.deepEqual(status.missingInactiveDevices.map((device) => device.idx), ['5']);
+});
+
 test('connection, authentication, timeout and malformed-response failures are RED', () => {
   for (const message of ['ECONNREFUSED', 'HTTP 401 authentication failed', 'timeout', 'Ungültige Domoticz-Geräteliste']) {
     const status = createDomoticzStatus();

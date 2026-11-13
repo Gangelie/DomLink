@@ -11,7 +11,7 @@ import MatterBridge from './lib/matterBridge.js';
 import { createMatterStarter } from './lib/matterStartup.js';
 import { createDomoticzRefreshHandler, createSingleFlightPoll } from './lib/domoticzApi.js';
 import { buildPublicStatus, createDomoticzStatus, recordDomoticzFailure, recordValidDomoticzInventory } from './lib/domoticzStatus.js';
-import { ALEXA_TYPES } from './lib/deviceTypes.js';
+import { createDeviceApiRouter } from './lib/deviceApi.js';
 import * as eventLog from './lib/eventLog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,6 +27,11 @@ const deviceStore = new DeviceStore({ cfg, persist, domoticz });
 const matter = new MatterBridge({ deviceStore, dataDir: configStore.DATA_DIR, logger: console });
 
 const domoticzState = createDomoticzStatus();
+
+deviceStore.on('diagnostics-changed', (diagnostics) => {
+  if (!domoticzState.inventoryValid) return;
+  recordValidDomoticzInventory(domoticzState, diagnostics, domoticzState.inventoryCheckedAt ?? Date.now());
+});
 
 const pollDomoticz = createSingleFlightPoll(async () => {
   const checkedAt = Date.now();
@@ -60,6 +65,7 @@ app.use(
 
 app.use('/api/auth', createAuthRouter(cfg, persist));
 app.use('/api', requireAuth);
+app.use('/api', createDeviceApiRouter({ deviceStore, matter }));
 
 // ---------------------------------------------------------------------
 // Status (top bar)
@@ -153,19 +159,6 @@ app.get('/api/log/stream', (req, res) => {
 // ---------------------------------------------------------------------
 // Devices
 // ---------------------------------------------------------------------
-app.get('/api/devices', (req, res) => {
-  res.json({ devices: deviceStore.list(), alexaTypes: ALEXA_TYPES });
-});
-
-app.put('/api/devices/:idx', (req, res) => {
-  try {
-    const record = deviceStore.updateDeviceConfig(req.params.idx, req.body || {});
-    res.json({ ok: true, device: record });
-  } catch (err) {
-    res.status(400).json({ ok: false, error: err.message });
-  }
-});
-
 app.post('/api/devices/refresh', createDomoticzRefreshHandler({ pollDomoticz, deviceStore, domoticzState, matter }));
 
 // ---------------------------------------------------------------------
