@@ -150,6 +150,10 @@
         </div>
         <p id="device-empty" class="hidden text-center text-gray-500 py-10">Keine Geräte gefunden. Prüfe die Domoticz-Verbindung in den Einstellungen.</p>
       </div>
+      <details id="retired-archive" class="hidden mt-5 bg-surface border border-white/10 rounded-xl">
+        <summary class="cursor-pointer px-4 py-3 text-gray-200">Aus Matter entfernte Geräte <span id="retired-archive-count" class="text-gray-500"></span></summary>
+        <div id="retired-archive-list" class="divide-y divide-white/5"></div>
+      </details>
     </section>
 
     <!-- Settings -->
@@ -303,6 +307,7 @@
 
   let currentTab = 'all';
   let devices = [];
+  let archivedDevices = [];
   let alexaTypes = Object.keys(ALEXA_TYPE_LABELS);
   let matterPollTimer = null;
 
@@ -650,6 +655,7 @@
     try {
       const data = await api('/api/devices');
       devices = data.devices;
+      archivedDevices = data.archivedDevices || [];
       alexaTypes = data.alexaTypes || alexaTypes;
       renderDevices();
     } catch (e) {
@@ -786,8 +792,17 @@
       const tdMatterAction = document.createElement('td');
       tdMatterAction.className = 'px-4 py-3';
       if (d.retired) {
-        tdMatterAction.textContent = d.retirement?.state === 'completed' ? 'Aus Matter entfernt' : `Wiederherstellung erforderlich (${d.retirement?.state || 'unbekannt'})`;
-        tdMatterAction.className += ' text-amber-200';
+        if (d.canAdoptAsNew && d.retirement?.state === 'completed') {
+          const adoptButton = document.createElement('button');
+          adoptButton.type = 'button';
+          adoptButton.textContent = 'Als neues Gerät übernehmen';
+          adoptButton.className = 'rounded-lg border border-blue-500/40 px-3 py-1.5 text-blue-200 hover:bg-blue-900/30';
+          adoptButton.addEventListener('click', () => confirmAdoptAsNew(d));
+          tdMatterAction.appendChild(adoptButton);
+        } else {
+          tdMatterAction.textContent = d.retirement?.state === 'completed' ? 'Aus Matter entfernt' : `Wiederherstellung erforderlich (${d.retirement?.state || 'unbekannt'})`;
+          tdMatterAction.className += ' text-amber-200';
+        }
       } else if (d.matterRegistered) {
         const retireButton = document.createElement('button');
         retireButton.type = 'button';
@@ -818,6 +833,29 @@
       tr.append(tdActive, tdName, tdIdx, tdStatus, tdAlexaName, tdType, tdField, tdMatterAction);
       tbody.appendChild(tr);
     }
+    const archive = document.getElementById('retired-archive');
+    const archiveList = document.getElementById('retired-archive-list');
+    archiveList.innerHTML = '';
+    document.getElementById('retired-archive-count').textContent = archivedDevices.length ? `(${archivedDevices.length})` : '';
+    archive.classList.toggle('hidden', archivedDevices.length === 0);
+    for (const item of archivedDevices) {
+      const row = document.createElement('div'); row.className = 'px-4 py-3 text-sm text-gray-300';
+      const title = document.createElement('div'); title.className = 'font-medium text-gray-100';
+      title.textContent = item.domoticzName || `Domoticz IDX ${item.idx}`;
+      const metadata = document.createElement('div'); metadata.className = 'text-gray-400';
+      const date = item.completedAt || item.requestedAt;
+      metadata.textContent = `Alexa: ${item.alexaName || '—'} · IDX ${item.idx} · Entfernt: ${date ? new Date(date).toLocaleString() : 'Datum unbekannt'} · Status: Aus Matter entfernt`;
+      row.append(title, metadata); archiveList.appendChild(row);
+    }
+  }
+
+  async function confirmAdoptAsNew(device) {
+    if (!window.confirm(`IDX ${device.idx} als neues Domoticz-Gerät übernehmen?\n\nEs erhält eine neue Matter-Identität und startet inaktiv. Die frühere Matter-Identität bleibt dauerhaft reserviert.`)) return;
+    try {
+      await api(`/api/devices/${encodeURIComponent(device.idx)}/adopt-new`, { method: 'POST', body: { confirmIdx: String(device.idx) } });
+      toast('Gerät als neue, inaktive Geräteinstanz übernommen.', 'success');
+      await refreshDevices();
+    } catch (error) { toast(error.message, 'error'); }
   }
 
   async function confirmRetirement(device) {
