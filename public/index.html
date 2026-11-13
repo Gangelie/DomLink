@@ -142,6 +142,7 @@
                 <th class="px-4 py-3 font-medium">Alexa Display Name</th>
                 <th class="px-4 py-3 font-medium">Alexa Typ</th>
                 <th class="px-4 py-3 font-medium">Quellwert</th>
+                <th class="px-4 py-3 font-medium">Matter</th>
               </tr>
             </thead>
             <tbody id="device-table-body" class="divide-y divide-white/5"></tbody>
@@ -766,9 +767,69 @@
         tdField.textContent = '–';
       }
 
-      tr.append(tdActive, tdName, tdIdx, tdStatus, tdAlexaName, tdType, tdField);
+      const tdMatterAction = document.createElement('td');
+      tdMatterAction.className = 'px-4 py-3';
+      if (d.retired) {
+        tdMatterAction.textContent = d.retirement?.state === 'completed' ? 'Aus Matter entfernt' : `Wiederherstellung erforderlich (${d.retirement?.state || 'unbekannt'})`;
+        tdMatterAction.className += ' text-amber-200';
+      } else if (d.matterRegistered) {
+        const retireButton = document.createElement('button');
+        retireButton.type = 'button';
+        retireButton.textContent = 'Dauerhaft aus Matter entfernen';
+        retireButton.className = 'rounded-lg border border-red-500/40 px-3 py-1.5 text-red-200 hover:bg-red-900/30';
+        retireButton.addEventListener('click', () => confirmRetirement(d));
+        tdMatterAction.appendChild(retireButton);
+      } else tdMatterAction.textContent = '–';
+
+      if (d.retired) {
+        tdActive.querySelector('input')?.setAttribute('disabled', 'disabled');
+        nameInput.disabled = true;
+        select.disabled = true;
+      }
+      tr.append(tdActive, tdName, tdIdx, tdStatus, tdAlexaName, tdType, tdField, tdMatterAction);
       tbody.appendChild(tr);
     }
+  }
+
+  async function confirmRetirement(device) {
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4';
+    const panel = document.createElement('div');
+    panel.className = 'w-full max-w-lg rounded-xl border border-white/10 bg-surface p-5 space-y-4';
+    const title = document.createElement('h2');
+    title.className = 'text-lg font-semibold';
+    title.textContent = 'Dauerhaft aus Matter entfernen';
+    const details = document.createElement('p');
+    details.className = 'text-sm text-gray-300 whitespace-pre-line';
+    details.textContent = `Domoticz: ${device.domoticzName}\nIDX: ${device.idx}\nAlexa: ${device.alexaName || '—'}\nMatter-Endpunktnummer: ${device.endpointNumber ?? 'nicht verfügbar'}`;
+    const warning = document.createElement('p');
+    warning.className = 'text-sm text-amber-200 whitespace-pre-line';
+    warning.textContent = 'Dieses Gerät wird dauerhaft aus der Matter-Bridge entfernt.\n\nEs kann dadurch aus Alexa verschwinden. Routinen, die dieses Gerät verwenden, funktionieren möglicherweise nicht mehr.\n\nDie anderen Matter-Geräte bleiben erhalten.\n\nDiese Aktion kann nicht über den normalen Aktivieren-Schalter rückgängig gemacht werden.';
+    const checkLabel = document.createElement('label');
+    checkLabel.className = 'flex gap-2 text-sm';
+    const checkbox = document.createElement('input'); checkbox.type = 'checkbox';
+    checkLabel.append(checkbox, document.createTextNode('Ich verstehe die Folgen dieser dauerhaften Entfernung.'));
+    const input = document.createElement('input'); input.className = 'w-full rounded-lg px-3 py-2'; input.placeholder = `Domoticz-IDX exakt eingeben: ${device.idx}`;
+    const buttons = document.createElement('div'); buttons.className = 'flex justify-end gap-2';
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Abbrechen'; cancel.className = 'rounded-lg px-3 py-2 bg-white/10';
+    const submit = document.createElement('button'); submit.type = 'button'; submit.textContent = 'Dauerhaft entfernen'; submit.disabled = true; submit.className = 'rounded-lg px-3 py-2 bg-red-800 disabled:opacity-40';
+    const update = () => { submit.disabled = !(checkbox.checked && input.value === String(device.idx)); };
+    checkbox.addEventListener('change', update); input.addEventListener('input', update);
+    cancel.addEventListener('click', () => overlay.remove());
+    submit.addEventListener('click', async () => {
+      submit.disabled = true; submit.textContent = 'Entfernung läuft…'; cancel.disabled = true;
+      try {
+        const result = await api(`/api/devices/${encodeURIComponent(device.idx)}/matter/retire`, { method: 'POST', body: { confirmIdx: input.value } });
+        overlay.remove();
+        toast(result.alreadyRetired ? 'Gerät war bereits aus Matter entfernt.' : 'Gerät dauerhaft aus Matter entfernt.', 'success');
+        await refreshDevices();
+      } catch (error) {
+        submit.textContent = error.status === 500 ? 'Wiederherstellung erforderlich' : 'Erneut versuchen';
+        toast(error.message, 'error');
+        cancel.disabled = false; update();
+      }
+    });
+    buttons.append(cancel, submit); panel.append(title, details, warning, checkLabel, input, buttons); overlay.appendChild(panel); document.body.appendChild(overlay); input.focus();
   }
 
   async function updateDevice(idx, patch) {

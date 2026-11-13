@@ -9,6 +9,7 @@ import {
 import DeviceStore from '../lib/deviceStore.js';
 import DomoticzClient from '../lib/domoticz.js';
 import MatterBridge from '../lib/matterBridge.js';
+import { requireAuth } from '../lib/auth.js';
 
 const LEVEL_NAMES = Buffer.from('Off|Auto|Kuehlen|Fan|Heizen', 'utf8').toString('base64');
 
@@ -69,6 +70,45 @@ test('ordinary devices continue using switchlight', async () => {
   store.updateDeviceConfig('12', { active: true });
   await store.applyStateChange('domlink-12', { powerState: 'ON' });
   assert.deepEqual(commands, [['switchlight', '12', 'On']]);
+});
+
+test('retired endpoint tombstones block activation and inventory never restores Matter registration', async () => {
+  const commands = [];
+  const cfg = {
+    matterRetirements: { '77': { idx: '77', matterEndpointId: 'd77', endpointNumber: 4, state: 'completed' } },
+    devices: { '77': { active: false, matterRegistered: false, alexaType: 'SWITCH', alexaName: 'Retired' } },
+  };
+  const store = new DeviceStore({
+    cfg,
+    persist() {},
+    domoticz: {
+      getDevices: async () => [{ idx: '77', Name: 'Retired', Type: 'Light/Switch', SwitchType: 'On/Off', Status: 'Off' }],
+      switchLight: async (...args) => commands.push(args),
+    },
+  });
+  assert.throws(() => store.updateDeviceConfig('77', { active: true }), /dauerhaft aus Matter entfernt/);
+  await store.refresh();
+  const record = store.list().find((device) => device.idx === '77');
+  assert.equal(record.retired, true);
+  assert.equal(record.matterRegistered, false);
+  assert.equal(record.retirement.matterEndpointId, 'd77');
+  assert.equal(record.retirement.error, undefined);
+  assert.deepEqual(store.getRegisteredDevices(), []);
+  assert.deepEqual(commands, []);
+});
+
+test('retirement API authentication middleware rejects unauthenticated sessions', () => {
+  let statusCode;
+  let responseBody;
+  let nextCalled = false;
+  const response = {
+    status(code) { statusCode = code; return this; },
+    json(body) { responseBody = body; return this; },
+  };
+  requireAuth({ session: {} }, response, () => { nextCalled = true; });
+  assert.equal(statusCode, 401);
+  assert.deepEqual(responseBody, { error: 'Nicht angemeldet' });
+  assert.equal(nextCalled, false);
 });
 
 test('selector names, numeric status and per-level mappings are decoded', () => {

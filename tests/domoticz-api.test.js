@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
+import session from 'express-session';
+import bcrypt from 'bcryptjs';
 import {
   createDomoticzRefreshHandler,
   createSingleFlightPoll,
@@ -11,6 +13,64 @@ import {
   recordDomoticzFailure,
   recordValidDomoticzInventory,
 } from '../lib/domoticzStatus.js';
+import { createAuthRouter, requireAuth } from '../lib/auth.js';
+import { createDeviceApiRouter } from '../lib/deviceApi.js';
+
+test('HTTP retirement route enforces session auth, confirmation, dispatch, and safe errors', async (t) => {
+  let failSensitive = false;
+  const calls = [];
+  const deviceStore = {
+    list: () => [{ idx: '512', deviceId: 'domlink-512', retirement: null }],
+    updateDeviceConfig() {},
+  };
+  const matter = {
+    endpoints: new Map(),
+    async retireDevice(idx, confirmIdx) {
+      calls.push([idx, confirmIdx]);
+      if (failSensitive) throw Object.assign(new Error('private token=SECRET QR=PAIRING'), { statusCode: 500, recoveryRequired: true });
+      if (confirmIdx !== idx) throw Object.assign(new Error('Bestätigung stimmt nicht'), { statusCode: 400 });
+      if (idx !== '512') throw Object.assign(new Error('Unbekanntes Gerät'), { statusCode: 404 });
+      return { ok: true, alreadyRetired: false, retirement: { idx, state: 'completed' } };
+    },
+  };
+  const app = express();
+  app.use(express.json());
+  app.use(session({ secret: 'test-session-secret', resave: false, saveUninitialized: false }));
+  const authConfig = { passwordHash: bcrypt.hashSync('test-password', 4), mustChangePassword: false };
+  app.use('/api/auth', createAuthRouter(authConfig, () => {}));
+  app.use('/api', requireAuth);
+  app.use('/api', createDeviceApiRouter({ deviceStore, matter }));
+  const server = await new Promise((resolve) => {
+    const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const path = '/api/devices/512/matter/retire';
+  const unauthenticated = await fetch(`${base}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmIdx: '512' }) });
+  assert.equal(unauthenticated.status, 401);
+  assert.deepEqual(calls, []);
+
+  const login = await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'test-password' }),
+  });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get('set-cookie').split(';', 1)[0];
+  const post = (confirmIdx) => fetch(`${base}${path}`, {
+    method: 'POST', headers: { cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmIdx }),
+  });
+  const invalid = await post('999');
+  assert.equal(invalid.status, 400);
+  assert.deepEqual(calls.at(-1), ['512', '999']);
+  const success = await post('512');
+  assert.equal(success.status, 200);
+  assert.deepEqual(calls.at(-1), ['512', '512']);
+
+  failSensitive = true;
+  const failure = await post('512');
+  assert.equal(failure.status, 500);
+  const body = await failure.text();
+  assert.doesNotMatch(body, /SECRET|PAIRING|private token/);
+});
 
 test('authenticated POST /api/devices/refresh polls and reports status for presence, absence, outage and recovery', async (t) => {
   const configs = {
