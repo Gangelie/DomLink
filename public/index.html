@@ -46,6 +46,9 @@
   }
   input:focus, select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,.3); }
 
+  .alexa-name-column { width: 300px; min-width: 300px; }
+  .alexa-name-input { box-sizing: border-box; width: 100%; min-width: 260px; max-width: 280px; }
+
   .toast { animation: fadein .15s ease-out; }
   @keyframes fadein { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
 </style>
@@ -139,7 +142,7 @@
                 <th class="px-4 py-3 font-medium">Domoticz Name</th>
                 <th class="px-4 py-3 font-medium">IDX</th>
                 <th class="px-4 py-3 font-medium">Status</th>
-                <th class="px-4 py-3 font-medium">Alexa Display Name</th>
+                <th class="alexa-name-column px-4 py-3 font-medium">Alexa Display Name</th>
                 <th class="px-4 py-3 font-medium">Alexa Typ</th>
                 <th class="px-4 py-3 font-medium">Quellwert</th>
                 <th class="px-4 py-3 font-medium">Matter</th>
@@ -717,11 +720,12 @@
       else tdStatus.textContent = stateSummary(d);
 
       const tdAlexaName = document.createElement('td');
-      tdAlexaName.className = 'px-4 py-3';
+      tdAlexaName.className = 'alexa-name-column px-4 py-3';
       const nameInput = document.createElement('input');
       nameInput.type = 'text';
       nameInput.value = d.alexaName || d.domoticzName;
-      nameInput.className = 'w-full rounded-lg px-2 py-1.5';
+      nameInput.title = nameInput.value;
+      nameInput.className = 'alexa-name-input w-full rounded-lg px-2 py-1.5';
       nameInput.addEventListener('change', () => updateDevice(d.idx, { alexaName: nameInput.value }));
       tdAlexaName.appendChild(nameInput);
 
